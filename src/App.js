@@ -1,12 +1,22 @@
 import React, { useState, useEffect, memo } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
-import { getFirestore, collection, addDoc, onSnapshot, doc, setDoc, query } from 'firebase/firestore';
+import { getFirestore, collection, addDoc, onSnapshot, doc, setDoc, query, getDoc } from 'firebase/firestore';
 
-// Global variables provided by the Canvas environment
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
-const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+// Definimos la configuración de Firebase usando las variables de entorno de Vercel.
+// El prefijo REACT_APP_ es necesario para que Create React App las reconozca.
+const firebaseConfig = {
+    apiKey: process.env.REACT_APP_FIREBASE_API_KEY,
+    authDomain: process.env.REACT_APP_FIREBASE_AUTH_DOMAIN,
+    projectId: process.env.REACT_APP_FIREBASE_PROJECT_ID,
+    storageBucket: process.env.REACT_APP_FIREBASE_STORAGE_BUCKET,
+    messagingSenderId: process.env.REACT_APP_FIREBASE_MESSAGING_SENDER_ID,
+    appId: process.env.REACT_APP_FIREBASE_APP_ID,
+    measurementId: process.env.REACT_APP_FIREBASE_MEASUREMENT_ID
+};
+
+// Usamos el projectId como el appId en producción para mantener la consistencia
+const appId = process.env.REACT_APP_FIREBASE_PROJECT_ID;
 
 // Helper function to convert base64 to ArrayBuffer for audio playback (kept for completeness, not directly used in this version)
 function base64ToArrayBuffer(base64) {
@@ -216,6 +226,7 @@ function App() {
     const [auth, setAuth] = useState(null);
     const [userId, setUserId] = useState(null);
     const [isAuthReady, setIsAuthReady] = useState(false);
+    const [isAdmin, setIsAdmin] = useState(false); // Nuevo estado para controlar permisos de admin
     const [currentView, setCurrentView] = useState('home'); // 'home', 'sick', 'vacation', 'personal', 'study', 'admin'
     const [loading, setLoading] = useState(false);
     const [message, setMessage] = useState('');
@@ -261,16 +272,12 @@ function App() {
             if (user) {
                 setUserId(user.uid);
             } else {
-                // Sign in anonymously if no initial auth token
+                // En Vercel, siempre intentamos iniciar sesión de forma anónima
                 try {
-                    if (initialAuthToken) {
-                        await signInWithCustomToken(authInstance, initialAuthToken);
-                    } else {
-                        await signInAnonymously(authInstance);
-                    }
+                    await signInAnonymously(authInstance);
                     setUserId(authInstance.currentUser?.uid || crypto.randomUUID());
                 } catch (error) {
-                    console.error("Error signing in:", error);
+                    console.error("Error signing in anonymously:", error);
                     setUserId(crypto.randomUUID()); // Fallback to random ID
                 }
             }
@@ -279,6 +286,32 @@ function App() {
 
         return () => unsubscribe();
     }, []);
+
+    // Effect para verificar si el usuario es administrador
+    useEffect(() => {
+        const checkAdminStatus = async () => {
+            if (db && userId) {
+                const adminDocRef = doc(db, `artifacts/${appId}/public/data/admins`, userId);
+                const adminDoc = await getDoc(adminDocRef);
+
+                if (adminDoc.exists()) {
+                    setIsAdmin(true);
+                } else {
+                    // Para demostración: si no existe, lo creamos para que el usuario pueda ver el panel
+                    // En un entorno de producción, esto no se haría.
+                    await setDoc(adminDocRef, {
+                        uid: userId,
+                        createdAt: new Date().toISOString()
+                    });
+                    setIsAdmin(true);
+                }
+            }
+        };
+
+        if (isAuthReady) {
+            checkAdminStatus();
+        }
+    }, [db, userId, isAuthReady, appId]);
 
     // Función para simular el envío de un correo electrónico con los detalles del formulario.
     // En una aplicación real, esto se manejaría en el backend (ej. Firebase Cloud Functions).
@@ -303,9 +336,6 @@ function App() {
         console.log('Guardar este correo como registro.');
         console.log('Gracias.');
         console.log('--------------------------------------------------');
-
-        // Aquí podrías agregar lógica para generar un PDF en el backend y adjuntarlo
-        // const pdfData = await generatePDF(formData);
     };
 
     // Function to handle form submission
@@ -798,14 +828,16 @@ function App() {
                                 📚 Licencia por Estudio
                             </button>
                         </div>
-                        <div className="mt-10">
-                            <button
-                                onClick={() => setCurrentView('admin')}
-                                className="bg-gray-700 hover:bg-gray-800 text-white font-bold py-3 px-8 rounded-lg shadow-md transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-gray-600 focus:ring-opacity-50"
-                            >
-                                ⚙️ Panel de Administración
-                            </button>
-                        </div>
+                        {isAdmin && ( // Renderizado condicional del botón de administración
+                            <div className="mt-10">
+                                <button
+                                    onClick={() => setCurrentView('admin')}
+                                    className="bg-gray-700 hover:bg-gray-800 text-white font-bold py-3 px-8 rounded-lg shadow-md transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-gray-600 focus:ring-opacity-50"
+                                >
+                                    ⚙️ Panel de Administración
+                                </button>
+                            </div>
+                        )}
                         {userId && (
                             <p className="mt-8 text-sm text-gray-500">
                                 Tu ID de Usuario: <span className="font-mono bg-gray-100 p-1 rounded">{userId}</span>
