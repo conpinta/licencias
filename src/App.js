@@ -5,33 +5,6 @@ import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, si
 import { getFirestore, collection, addDoc, onSnapshot, doc, getDoc, deleteDoc, query } from 'firebase/firestore';
 import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 
-// Variables globales para la configuración de Firebase
-let appId = 'default-app-id';
-let firebaseConfig = {};
-let __initial_auth_token = '';
-
-// Obtener la configuración de Firebase desde el entorno de Canvas
-if (typeof window !== 'undefined' && typeof window.__firebase_config !== 'undefined') {
-    try {
-        firebaseConfig = JSON.parse(window.__firebase_config);
-    } catch (e) {
-        console.error("Error parsing __firebase_config:", e);
-    }
-}
-
-if (typeof window !== 'undefined' && typeof window.__app_id !== 'undefined') {
-    appId = window.__app_id;
-}
-if (typeof window !== 'undefined' && typeof window.__initial_auth_token !== 'undefined') {
-    __initial_auth_token = window.__initial_auth_token;
-}
-
-// Inicializar Firebase
-const app = initializeApp(firebaseConfig);
-const db = getFirestore(app);
-const auth = getAuth(app);
-const storage = getStorage(app);
-
 // Componente para los campos comunes del formulario (memoized para evitar re-renders innecesarios)
 const CommonFormFields = memo(({ dni, setDni, categoria, setCategoria, oficina, setOficina, email, setEmail, celular, setCelular }) => (
     <>
@@ -102,14 +75,11 @@ const AdminPanel = memo(({ db, isAuthReady, appId, setMessage, setError }) => {
     const [showExportDropdown, setShowExportDropdown] = useState(false);
     const exportDropdownRef = useRef(null);
     
-    // Nuevos estados para controlar la carga de librerías
     const [isXLSXLoaded, setIsXLSXLoaded] = useState(false);
     const [isJSPdfLoaded, setIsJSPdfLoaded] = useState(false);
     const [loadingLibraries, setLoadingLibraries] = useState(true);
 
-    // useEffect para cargar dinámicamente las librerías
     useEffect(() => {
-        // Función para cargar un script
         const loadScript = (src, onLoadCallback, onErrorCallback) => {
             const script = document.createElement('script');
             script.src = src;
@@ -120,14 +90,12 @@ const AdminPanel = memo(({ db, isAuthReady, appId, setMessage, setError }) => {
             return script;
         };
 
-        // Cargar XLSX
         const xlsxScript = loadScript(
             "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.17.0/xlsx.full.min.js",
             () => setIsXLSXLoaded(true),
             () => setError("Error al cargar la librería de Excel.")
         );
 
-        // Cargar jsPDF y luego autoTable
         const jspdfScript = loadScript(
             "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js",
             () => {
@@ -152,14 +120,12 @@ const AdminPanel = memo(({ db, isAuthReady, appId, setMessage, setError }) => {
     useEffect(() => {
         if (!db || !isAuthReady) return;
 
-        // Fetch all submitted forms from the public collection
         const q = query(collection(db, `artifacts/${appId}/public/data/allLicencias`));
         const unsubscribe = onSnapshot(q, (snapshot) => {
             const forms = [];
             snapshot.forEach((doc) => {
                 forms.push({ id: doc.id, ...doc.data() });
             });
-            // Sort forms by timestamp in memory (client-side)
             forms.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
             setSubmittedForms(forms);
             setAdminMessage(`Se han cargado ${forms.length} solicitudes.`);
@@ -171,7 +137,6 @@ const AdminPanel = memo(({ db, isAuthReady, appId, setMessage, setError }) => {
         return () => unsubscribe();
     }, [db, isAuthReady, appId, setError]);
 
-    // Hook para cerrar el dropdown al hacer clic fuera de él
     useEffect(() => {
         const handleClickOutside = (event) => {
             if (exportDropdownRef.current && !exportDropdownRef.current.contains(event.target)) {
@@ -184,7 +149,6 @@ const AdminPanel = memo(({ db, isAuthReady, appId, setMessage, setError }) => {
         };
     }, [exportDropdownRef]);
 
-    // Función para preparar los datos para la exportación
     const getExportData = () => {
         return submittedForms.map(form => {
             const name = form.nombreCompletoEmpleado || `${form.nombre || ''} ${form.apellido || ''}`.trim();
@@ -205,12 +169,11 @@ const AdminPanel = memo(({ db, isAuthReady, appId, setMessage, setError }) => {
                 'Días': diasStr,
                 'Adjunto': adjuntoStr,
                 'Fecha Envío': timestampStr,
-                'URL Adjunto': form.archivoAdjunto || '-', // Agregar la URL del adjunto
+                'URL Adjunto': form.archivoAdjunto || '-',
             };
         });
     };
 
-    // Función para exportar los datos a TXT
     const handleExportTxt = () => {
         const data = getExportData();
         if (data.length === 0) {
@@ -233,7 +196,6 @@ const AdminPanel = memo(({ db, isAuthReady, appId, setMessage, setError }) => {
         setShowExportDropdown(false);
     };
 
-    // Función para exportar los datos a Excel
     const handleExportExcel = () => {
         if (!isXLSXLoaded) {
             setError("Error: La librería XLSX aún no está disponible.");
@@ -253,7 +215,6 @@ const AdminPanel = memo(({ db, isAuthReady, appId, setMessage, setError }) => {
         setShowExportDropdown(false);
     };
 
-    // Función para exportar los datos a PDF
     const handleExportPdf = () => {
         if (!isJSPdfLoaded) {
             setError("Error: La librería jsPDF aún no está disponible.");
@@ -296,7 +257,6 @@ const AdminPanel = memo(({ db, isAuthReady, appId, setMessage, setError }) => {
         setShowExportDropdown(false);
     };
 
-    // Función para enviar WhatsApp
     const handleWhatsApp = (form) => {
         const name = form.nombreCompletoEmpleado || `${form.nombre || ''} ${form.apellido || ''}`.trim();
         const message = `Hola ${name}, te escribimos en relación a tu solicitud de licencia (Ticket #${form.id}).`;
@@ -304,13 +264,11 @@ const AdminPanel = memo(({ db, isAuthReady, appId, setMessage, setError }) => {
         window.open(whatsappUrl, '_blank');
     };
 
-    // Función para manejar la confirmación de eliminación
     const confirmDelete = (docId) => {
         setDocToDelete(docId);
         setShowDeleteConfirm(true);
     };
 
-    // Función para eliminar un documento de Firestore
     const handleDelete = async () => {
         if (!docToDelete) return;
         
@@ -502,25 +460,81 @@ export default function App() {
     const [adjuntoEnfermedad, setAdjuntoEnfermedad] = useState(null);
     const [diagnostico, setDiagnostico] = useState('');
 
-    // Estado para saber si la autenticación está lista
-    const [isAuthReady, setIsAuthReady] = useState(false);
+    // Estados de inicialización de Firebase
+    const [firebaseReady, setFirebaseReady] = useState(false);
+    const [authReady, setAuthReady] = useState(false);
+    const [app, setApp] = useState(null);
+    const [db, setDb] = useState(null);
+    const [auth, setAuth] = useState(null);
+    const [storage, setStorage] = useState(null);
 
-    // useEffect para manejar el estado de autenticación de Firebase
     useEffect(() => {
-        const unsubscribe = onAuthStateChanged(auth, async (user) => {
-            if (user) {
-                setUser(user);
-            } else {
-                setUser(null);
-            }
-            setIsAuthReady(true);
-        });
+        try {
+            // Variables globales para la configuración de Firebase
+            let firebaseConfig = {};
+            let appId = 'default-app-id';
+            let initialAuthToken = '';
 
-        // Limpiar el listener al desmontar el componente
-        return () => unsubscribe();
+            // Obtener la configuración de Firebase desde el entorno de Canvas o Vercel
+            if (typeof window !== 'undefined' && typeof window.__firebase_config !== 'undefined') {
+                firebaseConfig = JSON.parse(window.__firebase_config);
+            } else if (typeof process !== 'undefined' && process.env.REACT_APP_FIREBASE_CONFIG) {
+                firebaseConfig = JSON.parse(process.env.REACT_APP_FIREBASE_CONFIG);
+            }
+            if (typeof window !== 'undefined' && typeof window.__app_id !== 'undefined') {
+                appId = window.__app_id;
+            }
+            if (typeof window !== 'undefined' && typeof window.__initial_auth_token !== 'undefined') {
+                initialAuthToken = window.__initial_auth_token;
+            }
+
+            // Validar que la configuración no esté vacía
+            if (Object.keys(firebaseConfig).length === 0) {
+                console.error("Firebase config is missing. App cannot be initialized.");
+                setError("Error: La configuración de Firebase no se encontró. Revisa tus variables de entorno.");
+                return;
+            }
+
+            // Inicializar Firebase
+            const initializedApp = initializeApp(firebaseConfig);
+            const initializedDb = getFirestore(initializedApp);
+            const initializedAuth = getAuth(initializedApp);
+            const initializedStorage = getStorage(initializedApp);
+
+            setApp(initializedApp);
+            setDb(initializedDb);
+            setAuth(initializedAuth);
+            setStorage(initializedStorage);
+            setFirebaseReady(true);
+
+            // Manejar la autenticación inicial
+            const unsubscribe = onAuthStateChanged(initializedAuth, (user) => {
+                if (user) {
+                    setUser(user);
+                } else {
+                    setUser(null);
+                }
+                setAuthReady(true);
+            });
+
+            // Si hay un token de autenticación personalizado, úsalo
+            if (initialAuthToken) {
+                signInWithCustomToken(initializedAuth, initialAuthToken).catch((e) => {
+                    console.error("Error signing in with custom token:", e);
+                    signInAnonymously(initializedAuth);
+                });
+            } else {
+                signInAnonymously(initializedAuth);
+            }
+            
+            return () => unsubscribe();
+        } catch (e) {
+            console.error("Error during Firebase initialization:", e);
+            setError("Error grave en la inicialización de la aplicación. Revisa la consola para más detalles.");
+        }
     }, []);
 
-    // Función unificada para manejar la subida de archivos y el envío del formulario
+
     const handleSubmitWithFile = async (event, formType, file, formData) => {
         event.preventDefault();
         setError('');
@@ -530,29 +544,29 @@ export default function App() {
             setError('Error: Usuario no autenticado.');
             return;
         }
-
         if (!file) {
             setError('Por favor, adjunta un archivo.');
             return;
         }
+        if (!storage || !db) {
+            setError('Error: Los servicios de Firebase no están disponibles.');
+            return;
+        }
 
         try {
-            // Subir el archivo a Firebase Storage
             const fileRef = ref(storage, `licencias/${user.uid}/${formType}/${file.name}_${Date.now()}`);
             await uploadBytes(fileRef, file);
             const downloadURL = await getDownloadURL(fileRef);
 
-            // Preparar los datos para Firestore
             const dataToSave = {
                 ...formData,
                 formType,
                 userId: user.uid,
-                archivoAdjunto: downloadURL, // Guardar la URL de descarga
+                archivoAdjunto: downloadURL,
                 timestamp: new Date().toISOString(),
                 nombreCompletoEmpleado: nombreCompletoEmpleado || `${formData.nombre || ''} ${formData.apellido || ''}`.trim(),
             };
 
-            // Guardar los datos en Firestore
             const q = collection(db, `artifacts/${appId}/public/data/allLicencias`);
             await addDoc(q, dataToSave);
 
@@ -566,7 +580,6 @@ export default function App() {
         }
     };
 
-    // Funciones de manejo de formularios sin adjuntos (casi idénticas a las tuyas)
     const handleLogin = async (e) => {
         e.preventDefault();
         setError('');
@@ -631,8 +644,22 @@ export default function App() {
         setError('');
     };
 
-    // Lógica para renderizar formularios específicos (modificados para incluir adjuntos)
     const renderForm = () => {
+        if (!firebaseReady) {
+            return <div className="text-center text-gray-500">Cargando la configuración de la aplicación...</div>;
+        }
+        if (!authReady) {
+             return <div className="text-center text-gray-500">Autenticando usuario...</div>;
+        }
+        if (error && !user) {
+            return (
+                <div className="bg-white p-8 rounded-lg shadow-xl w-full max-w-md text-center">
+                    <p className="text-red-600 font-semibold">{error}</p>
+                    <p className="text-gray-500 mt-4">Por favor, asegúrate de que las variables de entorno de Firebase estén configuradas correctamente.</p>
+                </div>
+            );
+        }
+
         if (!user) {
             return (
                 <div className="bg-white p-8 rounded-lg shadow-xl w-full max-w-md">
@@ -762,7 +789,7 @@ export default function App() {
                 );
 
             case 'admin':
-                return <AdminPanel db={db} isAuthReady={isAuthReady} appId={appId} setMessage={setMessage} setError={setError} />;
+                return <AdminPanel db={db} isAuthReady={authReady} appId={appId} setMessage={setMessage} setError={setError} />;
 
             case 'success':
                 return (
@@ -814,9 +841,9 @@ export default function App() {
                         {error}
                     </div>
                 )}
-                {isAuthReady ? renderForm() : <div className="text-center text-gray-500">Cargando...</div>}
+                {renderForm()}
             </main>
         </div>
     );
 }
-export default App;
+
