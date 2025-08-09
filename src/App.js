@@ -1,6 +1,6 @@
 import React, { useState, useEffect, memo } from 'react';
 import { initializeApp } from 'firebase/app';
-import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
+import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut } from 'firebase/auth';
 import { getFirestore, collection, addDoc, onSnapshot, doc, setDoc, query, getDoc } from 'firebase/firestore';
 
 // Declarar las variables con valores predeterminados para evitar errores de 'no-undef' en la compilación de Vercel.
@@ -32,69 +32,7 @@ if (typeof window !== 'undefined' && typeof window.__initial_auth_token !== 'und
     initialAuthToken = window.__initial_auth_token;
 }
 
-// Helper function to convert base64 to ArrayBuffer for audio playback (kept for completeness, not directly used in this version)
-function base64ToArrayBuffer(base64) {
-    const binaryString = window.atob(base64);
-    const len = binaryString.length;
-    const bytes = new Uint8Array(len);
-    for (let i = 0; i < len; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
-    }
-    return bytes.buffer;
-}
-
-// Helper function to convert PCM audio data to WAV format (kept for completeness, not directly used in this version)
-function pcmToWav(pcm16, sampleRate) {
-    const numChannels = 1;
-    const bytesPerSample = 2; // 16-bit PCM
-    const blockAlign = numChannels * bytesPerSample;
-    const byteRate = sampleRate * blockAlign;
-
-    const wavBuffer = new ArrayBuffer(44 + pcm16.byteLength);
-    const view = new DataView(wavBuffer);
-
-    // RIFF chunk descriptor
-    writeString(view, 0, 'RIFF');
-    view.setUint32(4, 36 + pcm16.byteLength, true); // ChunkSize
-    writeString(view, 8, 'WAVE');
-
-    // FMT sub-chunk
-    writeString(view, 12, 'fmt ');
-    view.setUint32(16, 16, true); // Subchunk1Size (16 for PCM)
-    view.setUint16(20, 1, true); // AudioFormat (1 for PCM)
-    view.setUint16(22, numChannels, true);
-    view.setUint32(24, sampleRate, true);
-    view.setUint32(28, byteRate, true);
-    view.setUint16(32, blockAlign, true);
-    view.setUint16(34, 16, true); // BitsPerSample
-
-    // DATA sub-chunk
-    writeString(view, 36, 'data');
-    view.setUint32(40, pcm16.byteLength, true); // Subchunk2Size
-
-    // Write PCM data
-    const pcmBytes = new Uint8Array(pcm16.buffer);
-    for (let i = 0; i < pcmBytes.length; i++) {
-        view.setUint8(44 + i, pcmBytes[i]);
-    }
-
-    return new Blob([view], { type: 'audio/wav' });
-}
-
-function writeString(view, offset, string) {
-    for (let i = 0; i < string.length; i++) {
-        view.setUint8(offset + i, string.charCodeAt(i));
-    }
-}
-
-/**
- * COMPONENTES MOVIDOS FUERA DEL COMPONENTE PRINCIPAL
- * Este es el cambio principal para solucionar el error del cursor.
- * Al definir estos componentes fuera de App, se evita que se vuelvan a crear
- * en cada renderizado, manteniendo el foco en los campos del formulario.
- */
-
-// Componente para los campos comunes del formulario
+// Componente para los campos comunes del formulario (memoized para evitar re-renders innecesarios)
 const CommonFormFields = memo(({ dni, setDni, categoria, setCategoria, oficina, setOficina, email, setEmail, celular, setCelular }) => (
     <>
         <div className="mb-4">
@@ -155,7 +93,7 @@ const CommonFormFields = memo(({ dni, setDni, categoria, setCategoria, oficina, 
     </>
 ));
 
-// Componente para el Panel de Administración
+// Componente para el Panel de Administración (memoized para evitar re-renders innecesarios)
 const AdminPanel = memo(({ db, isAuthReady, appId }) => {
     const [submittedForms, setSubmittedForms] = useState([]);
     const [adminMessage, setAdminMessage] = useState('Cargando solicitudes...');
@@ -234,19 +172,107 @@ const AdminPanel = memo(({ db, isAuthReady, appId }) => {
     );
 });
 
+// Componente para el formulario de inicio de sesión
+const AuthForm = ({ auth, setIsAuthReady, setMessage, setError, setUserId, setView }) => {
+    const [email, setEmail] = useState('');
+    const [password, setPassword] = useState('');
+    const [isRegistering, setIsRegistering] = useState(false);
+
+    const handleAuth = async (e) => {
+        e.preventDefault();
+        setMessage('');
+        setError(null);
+        if (!auth) {
+            setError("Error: Firebase Auth no está inicializado.");
+            return;
+        }
+
+        try {
+            if (isRegistering) {
+                await createUserWithEmailAndPassword(auth, email, password);
+                setMessage('Usuario registrado con éxito. Inicia sesión ahora.');
+                setIsRegistering(false);
+            } else {
+                const userCredential = await signInWithEmailAndPassword(auth, email, password);
+                setUserId(userCredential.user.uid);
+                setMessage('Inicio de sesión exitoso.');
+            }
+        } catch (err) {
+            console.error("Error during authentication:", err);
+            setError(`Error de autenticación: ${err.message}`);
+        }
+    };
+
+    return (
+        <div className="p-6 bg-white rounded-lg shadow-md max-w-sm mx-auto my-8">
+            <h2 className="text-2xl font-bold mb-6 text-center text-gray-800">{isRegistering ? 'Registrarse' : 'Iniciar Sesión'}</h2>
+            <div className="flex justify-center mb-4">
+                <button
+                    onClick={() => setIsRegistering(false)}
+                    className={`px-4 py-2 rounded-l-lg font-bold ${!isRegistering ? 'bg-blue-500 text-white' : 'bg-gray-200 text-gray-700'}`}
+                >
+                    Iniciar Sesión
+                </button>
+                <button
+                    onClick={() => setIsRegistering(true)}
+                    className={`px-4 py-2 rounded-r-lg font-bold ${isRegistering ? 'bg-blue-500 text-white' : 'bg-gray-200 text-gray-700'}`}
+                >
+                    Registrarse
+                </button>
+            </div>
+            <form onSubmit={handleAuth}>
+                <div className="mb-4">
+                    <label className="block text-gray-700 text-sm font-bold mb-2" htmlFor="email">
+                        Correo Electrónico
+                    </label>
+                    <input
+                        className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        id="email"
+                        type="email"
+                        value={email}
+                        onChange={(e) => setEmail(e.target.value)}
+                        required
+                    />
+                </div>
+                <div className="mb-6">
+                    <label className="block text-gray-700 text-sm font-bold mb-2" htmlFor="password">
+                        Contraseña
+                    </label>
+                    <input
+                        className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        id="password"
+                        type="password"
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        required
+                    />
+                </div>
+                <div className="flex items-center justify-between">
+                    <button
+                        className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg focus:outline-none focus:shadow-outline w-full transition duration-300 ease-in-out transform hover:scale-105"
+                        type="submit"
+                    >
+                        {isRegistering ? 'Registrarse' : 'Iniciar Sesión'}
+                    </button>
+                </div>
+            </form>
+        </div>
+    );
+};
 
 function App() {
     const [db, setDb] = useState(null);
     const [auth, setAuth] = useState(null);
+    const [user, setUser] = useState(null); // Nuevo estado para el usuario autenticado
     const [userId, setUserId] = useState(null);
     const [isAuthReady, setIsAuthReady] = useState(false);
-    const [isAdmin, setIsAdmin] = useState(false); // Nuevo estado para controlar permisos de admin
-    const [currentView, setCurrentView] = useState('home'); // 'home', 'sick', 'vacation', 'personal', 'study', 'admin'
+    const [isAdmin, setIsAdmin] = useState(false);
+    const [currentView, setCurrentView] = useState('home');
     const [loading, setLoading] = useState(false);
     const [message, setMessage] = useState('');
-    const [error, setError] = useState(null); // Nuevo estado para manejar errores
+    const [error, setError] = useState(null);
 
-    // State for common form fields (nombre and apellido will be conditionally rendered)
+    // State for common form fields
     const [nombre, setNombre] = useState('');
     const [apellido, setApellido] = useState('');
     const [dni, setDni] = useState('');
@@ -261,8 +287,8 @@ function App() {
 
     // Specific states for sick leave
     const [tipoLicenciaEnfermedad, setTipoLicenciaEnfermedad] = useState('');
-    const [nombreEmpleadoEnfermedad, setNombreEmpleadoEnfermedad] = useState(''); // For selecting from a list or adding
-    const [otroNombreEmpleado, setOtroNombreEmpleado] = useState(''); // New state for 'Otro' input
+    const [nombreEmpleadoEnfermedad, setNombreEmpleadoEnfermedad] = useState('');
+    const [otroNombreEmpleado, setOtroNombreEmpleado] = useState('');
 
     // Specific states for vacation
     const [tipoLicenciaVacaciones, setTipoLicenciaVacaciones] = useState('');
@@ -276,7 +302,6 @@ function App() {
 
     // Firebase Initialization and Auth
     useEffect(() => {
-        // En Vercel, firebaseConfig puede estar vacío, así que verificamos
         if (Object.keys(firebaseConfig).length === 0) {
             setError("Error: La configuración de Firebase no se ha cargado. Por favor, revisa tus variables de entorno en Vercel.");
             setIsAuthReady(true);
@@ -287,41 +312,21 @@ function App() {
             const app = initializeApp(firebaseConfig);
             const authInstance = getAuth(app);
             const dbInstance = getFirestore(app);
-    
+
             setAuth(authInstance);
             setDb(dbInstance);
-    
-            const unsubscribe = onAuthStateChanged(authInstance, async (user) => {
+
+            const unsubscribe = onAuthStateChanged(authInstance, (user) => {
                 if (user) {
+                    setUser(user);
                     setUserId(user.uid);
                 } else {
-                    // Usamos el token personalizado si está disponible, de lo contrario, iniciamos sesión de forma anónima
-                    if (initialAuthToken) {
-                        try {
-                            await signInWithCustomToken(authInstance, initialAuthToken);
-                        } catch (error) {
-                            console.error("Error signing in with custom token:", error);
-                            // Fallback to anonymous sign-in if token fails
-                            try {
-                                await signInAnonymously(authInstance);
-                            } catch (anonError) {
-                                console.error("Error signing in anonymously after token failed:", anonError);
-                                // No es necesario establecer un error aquí, la app puede continuar
-                            }
-                        }
-                    } else {
-                        try {
-                            await signInAnonymously(authInstance);
-                        } catch (anonError) {
-                            console.error("Error signing in anonymously:", anonError);
-                            // No es necesario establecer un error aquí, la app puede continuar
-                        }
-                    }
-                    setUserId(authInstance.currentUser?.uid || crypto.randomUUID());
+                    setUser(null);
+                    setUserId(null);
                 }
                 setIsAuthReady(true);
             });
-    
+
             return () => unsubscribe();
         } catch (err) {
             console.error("Error initializing Firebase:", err);
@@ -332,11 +337,12 @@ function App() {
     // Effect para verificar si el usuario es administrador
     useEffect(() => {
         const checkAdminStatus = async () => {
-            if (!db || !userId) return; // Asegurarse de que db y userId no sean null
-            
+            if (!db || !userId) {
+                setIsAdmin(false);
+                return;
+            }
+
             try {
-                // Ahora solo verificamos si el documento de administrador existe.
-                // No lo creamos automáticamente.
                 const adminDocRef = doc(db, `artifacts/${appId}/public/data/admins`, userId);
                 const adminDoc = await getDoc(adminDocRef);
 
@@ -353,11 +359,25 @@ function App() {
 
         if (isAuthReady && db && userId) {
             checkAdminStatus();
+        } else {
+            setIsAdmin(false);
         }
     }, [db, userId, isAuthReady]);
 
-    // Función para simular el envío de un correo electrónico con los detalles del formulario.
-    // En una aplicación real, esto se manejaría en el backend (ej. Firebase Cloud Functions).
+    const handleLogout = async () => {
+        if (auth) {
+            try {
+                await signOut(auth);
+                setMessage("Sesión cerrada correctamente.");
+                setCurrentView('home');
+            } catch (error) {
+                console.error("Error during sign out:", error);
+                setError("Error al cerrar sesión.");
+            }
+        }
+    };
+
+    // Función para simular el envío de un correo electrónico
     const sendConfirmationEmail = async (formData, ticketNumber) => {
         console.log(`Simulación de envío de correo electrónico a: ${formData.email}`);
         console.log('--------------------------------------------------');
@@ -381,7 +401,6 @@ function App() {
         console.log('--------------------------------------------------');
     };
 
-    // Function to handle form submission
     const handleSubmit = async (e, formType) => {
         e.preventDefault();
         if (!db || !userId) {
@@ -408,18 +427,15 @@ function App() {
             archivoAdjunto: archivoAdjunto ? archivoAdjunto.name : null,
         };
 
-        // Add type-specific fields and ensure name/apellido are correctly assigned
         switch (formType) {
             case 'sick':
-                // Determine the actual employee name based on selection
                 const finalNombreEmpleado = nombreEmpleadoEnfermedad === 'Otro' ? otroNombreEmpleado : nombreEmpleadoEnfermedad;
                 const nameParts = finalNombreEmpleado.split(' ');
-
                 formData = {
                     ...formData,
-                    nombre: nameParts[0] || '', // Extract first name
-                    apellido: nameParts.slice(1).join(' ') || '', // Extract remaining parts as last name
-                    nombreCompletoEmpleado: finalNombreEmpleado, // Store full name from dropdown or 'Otro' input
+                    nombre: nameParts[0] || '',
+                    apellido: nameParts.slice(1).join(' ') || '',
+                    nombreCompletoEmpleado: finalNombreEmpleado,
                     tipoLicenciaEnfermedad,
                 };
                 break;
@@ -428,8 +444,8 @@ function App() {
             case 'study':
                 formData = {
                     ...formData,
-                    nombre, // Use general 'nombre' state
-                    apellido, // Use general 'apellido' state
+                    nombre,
+                    apellido,
                 };
                 if (formType === 'vacation') {
                     formData = {
@@ -454,11 +470,8 @@ function App() {
         }
 
         try {
-            // Store in a public collection for all submitted licenses
             const docRef = await addDoc(collection(db, `artifacts/${appId}/public/data/allLicencias`), formData);
             const ticketNumber = docRef.id;
-
-            // Simular el envío de un correo de confirmación
             await sendConfirmationEmail(formData, ticketNumber);
 
             setMessage(`Solicitud de ${formType} enviada con éxito! Tu número de ticket es: ${ticketNumber}. Se ha enviado un correo electrónico de confirmación a ${email}.`);
@@ -487,7 +500,7 @@ function App() {
         setArchivoAdjunto(null);
         setTipoLicenciaEnfermedad('');
         setNombreEmpleadoEnfermedad('');
-        setOtroNombreEmpleado(''); // Reset the new state
+        setOtroNombreEmpleado('');
         setTipoLicenciaVacaciones('');
         setAnioVacaciones('');
         setFechaInasistenciaRP('');
@@ -506,7 +519,16 @@ function App() {
                 </div>
             );
         }
-        
+
+        if (!isAuthReady) {
+            return <div className="text-center text-lg text-gray-600 mt-10">Cargando aplicación...</div>;
+        }
+
+        if (!user) {
+            // Si no hay un usuario autenticado, mostramos el formulario de login/registro
+            return <AuthForm auth={auth} setIsAuthReady={setIsAuthReady} setMessage={setMessage} setError={setError} setUserId={setUserId} />;
+        }
+
         switch (currentView) {
             case 'sick':
                 return (
@@ -522,7 +544,7 @@ function App() {
                                 onChange={(e) => {
                                     setNombreEmpleadoEnfermedad(e.target.value);
                                     if (e.target.value !== 'Otro') {
-                                        setOtroNombreEmpleado(''); // Clear 'Otro' field if a pre-existing name is selected
+                                        setOtroNombreEmpleado('');
                                     }
                                 }}
                                 required
@@ -538,8 +560,8 @@ function App() {
                                     type="text"
                                     placeholder="Ingrese el nombre completo"
                                     className="mt-2 shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                    value={otroNombreEmpleado} // Bind to new state
-                                    onChange={(e) => setOtroNombreEmpleado(e.target.value)} // Update new state
+                                    value={otroNombreEmpleado}
+                                    onChange={(e) => setOtroNombreEmpleado(e.target.value)}
                                     required
                                 />
                             )}
@@ -626,7 +648,6 @@ function App() {
                 return (
                     <form onSubmit={(e) => handleSubmit(e, 'vacation')} className="p-6 bg-white rounded-lg shadow-md max-w-lg mx-auto my-8">
                         <h2 className="text-2xl font-bold mb-6 text-center text-gray-800">Solicitud de Vacaciones</h2>
-                        {/* Specific name/apellido fields for this form */}
                         <div className="mb-4">
                             <label htmlFor="nombre" className="block text-gray-700 text-sm font-bold mb-2">Nombre:</label>
                             <input
@@ -720,7 +741,6 @@ function App() {
                 return (
                     <form onSubmit={(e) => handleSubmit(e, 'personal')} className="p-6 bg-white rounded-lg shadow-md max-w-lg mx-auto my-8">
                         <h2 className="text-2xl font-bold mb-6 text-center text-gray-800">Solicitud de Razones Particulares (Art. 34)</h2>
-                        {/* Specific name/apellido fields for this form */}
                         <div className="mb-4">
                             <label htmlFor="nombre" className="block text-gray-700 text-sm font-bold mb-2">Nombre:</label>
                             <input
@@ -789,7 +809,6 @@ function App() {
                 return (
                     <form onSubmit={(e) => handleSubmit(e, 'study')} className="p-6 bg-white rounded-lg shadow-md max-w-lg mx-auto my-8">
                         <h2 className="text-2xl font-bold mb-6 text-center text-gray-800">Solicitud de Licencia por Estudio</h2>
-                        {/* Specific name/apellido fields for this form */}
                         <div className="mb-4">
                             <label htmlFor="nombre" className="block text-gray-700 text-sm font-bold mb-2">Nombre:</label>
                             <input
@@ -883,7 +902,7 @@ function App() {
                                 📚 Licencia por Estudio
                             </button>
                         </div>
-                        {isAdmin && ( // Renderizado condicional del botón de administración
+                        {isAdmin && (
                             <div className="mt-10">
                                 <button
                                     onClick={() => setCurrentView('admin')}
@@ -917,16 +936,26 @@ function App() {
 
             <header className="flex justify-between items-center py-4 px-6 bg-white shadow-lg rounded-lg mb-8">
                 <h1 className="text-3xl font-bold text-gray-900">Gestión de Licencias</h1>
-                {currentView !== 'home' && (
-                    <button
-                        onClick={() => {
-                            setCurrentView('home');
-                            resetForm();
-                        }}
-                        className="bg-gray-200 hover:bg-gray-300 text-gray-800 font-bold py-2 px-4 rounded-lg transition duration-300 ease-in-out transform hover:scale-105"
-                    >
-                        Volver al Inicio
-                    </button>
+                {user && ( // Solo mostramos estos botones si el usuario está autenticado
+                    <div className="flex space-x-4">
+                        {currentView !== 'home' && (
+                            <button
+                                onClick={() => {
+                                    setCurrentView('home');
+                                    resetForm();
+                                }}
+                                className="bg-gray-200 hover:bg-gray-300 text-gray-800 font-bold py-2 px-4 rounded-lg transition duration-300 ease-in-out transform hover:scale-105"
+                            >
+                                Volver al Inicio
+                            </button>
+                        )}
+                        <button
+                            onClick={handleLogout}
+                            className="bg-red-500 hover:bg-red-600 text-white font-bold py-2 px-4 rounded-lg transition duration-300 ease-in-out transform hover:scale-105"
+                        >
+                            Cerrar Sesión
+                        </button>
+                    </div>
                 )}
             </header>
 
@@ -936,11 +965,7 @@ function App() {
                         {message}
                     </div>
                 )}
-                {!isAuthReady ? (
-                    <div className="text-center text-lg text-gray-600 mt-10">Cargando aplicación...</div>
-                ) : (
-                    renderForm()
-                )}
+                {renderForm()}
             </main>
         </div>
     );
