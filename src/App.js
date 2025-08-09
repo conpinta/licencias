@@ -1,7 +1,7 @@
 import React, { useState, useEffect, memo } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged, sendPasswordResetEmail } from 'firebase/auth';
-import { getFirestore, collection, addDoc, onSnapshot, doc, getDoc, query } from 'firebase/firestore';
+import { getFirestore, collection, addDoc, onSnapshot, doc, getDoc, deleteDoc, query } from 'firebase/firestore';
 
 // Variables globales para la configuración de Firebase
 let appId = 'default-app-id';
@@ -87,9 +87,11 @@ const CommonFormFields = memo(({ dni, setDni, categoria, setCategoria, oficina, 
 ));
 
 // Componente para el Panel de Administración (memoized para evitar re-renders innecesarios)
-const AdminPanel = memo(({ db, isAuthReady, appId }) => {
+const AdminPanel = memo(({ db, isAuthReady, appId, setMessage, setError }) => {
     const [submittedForms, setSubmittedForms] = useState([]);
     const [adminMessage, setAdminMessage] = useState('Cargando solicitudes...');
+    const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+    const [docToDelete, setDocToDelete] = useState(null);
 
     useEffect(() => {
         if (!db || !isAuthReady) return;
@@ -113,10 +115,76 @@ const AdminPanel = memo(({ db, isAuthReady, appId }) => {
         return () => unsubscribe();
     }, [db, isAuthReady, appId]);
 
+    // Función para exportar los datos
+    const handleExport = () => {
+        const header = "Ticket ID\tTipo\tNombre\tDNI\tEmail\tFecha Inicio\tFecha Fin/Inasistencia\tDías\tAdjunto\tFecha Envío\n";
+        const rows = submittedForms.map(form => {
+            const name = form.nombreCompletoEmpleado || `${form.nombre || ''} ${form.apellido || ''}`.trim();
+            const fechaInicioStr = form.fechaInicio || form.fechaInasistenciaRP || form.fechaInasistenciaEstudio || '-';
+            const fechaFinStr = form.fechaFin || '-';
+            const diasStr = form.cantidadDias || '-';
+            const adjuntoStr = form.archivoAdjunto ? 'Sí' : 'No';
+            return `${form.id}\t${form.formType}\t${name}\t${form.dni}\t${form.email}\t${fechaInicioStr}\t${fechaFinStr}\t${diasStr}\t${adjuntoStr}\t${new Date(form.timestamp).toLocaleString()}`;
+        }).join('\n');
+        
+        const data = header + rows;
+        const blob = new Blob([data], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `solicitudes_licencias_${new Date().toISOString()}.txt`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    };
+
+    // Función para enviar WhatsApp
+    const handleWhatsApp = (form) => {
+        const name = form.nombreCompletoEmpleado || `${form.nombre || ''} ${form.apellido || ''}`.trim();
+        const message = `Hola ${name}, te escribimos en relación a tu solicitud de licencia (Ticket #${form.id}).`;
+        const whatsappUrl = `https://wa.me/${form.celular}?text=${encodeURIComponent(message)}`;
+        window.open(whatsappUrl, '_blank');
+    };
+
+    // Función para manejar la confirmación de eliminación
+    const confirmDelete = (docId) => {
+        setDocToDelete(docId);
+        setShowDeleteConfirm(true);
+    };
+
+    // Función para eliminar un documento de Firestore
+    const handleDelete = async () => {
+        if (!docToDelete) return;
+        
+        try {
+            await deleteDoc(doc(db, `artifacts/${appId}/public/data/allLicencias`, docToDelete));
+            setMessage(`Solicitud #${docToDelete} eliminada con éxito.`);
+        } catch (err) {
+            console.error("Error deleting document:", err);
+            setError(`Error al eliminar la solicitud: ${err.message}`);
+        } finally {
+            setShowDeleteConfirm(false);
+            setDocToDelete(null);
+        }
+    };
+
     return (
-        <div className="p-6 bg-white rounded-lg shadow-md max-w-4xl mx-auto my-8">
+        <div className="p-6 bg-white rounded-lg shadow-md max-w-7xl mx-auto my-8">
             <h2 className="text-2xl font-bold mb-6 text-center text-gray-800">Panel de Administración - Solicitudes</h2>
-            <p className="text-gray-700 mb-4 text-center">{adminMessage}</p>
+            
+            <div className="flex justify-between items-center mb-4">
+                <p className="text-gray-700">{adminMessage}</p>
+                <button
+                    onClick={handleExport}
+                    className="bg-gray-500 hover:bg-gray-600 text-white font-bold py-2 px-4 rounded-lg flex items-center transition duration-300 ease-in-out transform hover:scale-105"
+                >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-2" viewBox="0 0 20 20" fill="currentColor">
+                        <path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clipRule="evenodd" />
+                    </svg>
+                    Exportar Todo
+                </button>
+            </div>
 
             {submittedForms.length === 0 ? (
                 <p className="text-center text-gray-600">No hay solicitudes enviadas aún.</p>
@@ -130,11 +198,9 @@ const AdminPanel = memo(({ db, isAuthReady, appId }) => {
                                 <th className="py-3 px-4 border-b text-left text-sm font-semibold text-gray-700">Nombre</th>
                                 <th className="py-3 px-4 border-b text-left text-sm font-semibold text-gray-700">DNI</th>
                                 <th className="py-3 px-4 border-b text-left text-sm font-semibold text-gray-700">Email</th>
-                                <th className="py-3 px-4 border-b text-left text-sm font-semibold text-gray-700">Fecha Inicio</th>
-                                <th className="py-3 px-4 border-b text-left text-sm font-semibold text-gray-700">Fecha Fin/Inasistencia</th>
-                                <th className="py-3 px-4 border-b text-left text-sm font-semibold text-gray-700">Días</th>
-                                <th className="py-3 px-4 border-b text-left text-sm font-semibold text-gray-700">Adjunto</th>
+                                <th className="py-3 px-4 border-b text-left text-sm font-semibold text-gray-700">Celular</th>
                                 <th className="py-3 px-4 border-b text-left text-sm font-semibold text-gray-700">Fecha Envío</th>
+                                <th className="py-3 px-4 border-b text-left text-sm font-semibold text-gray-700">Acciones</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -145,22 +211,58 @@ const AdminPanel = memo(({ db, isAuthReady, appId }) => {
                                     <td className="py-2 px-4 border-b text-sm text-gray-800">{form.nombreCompletoEmpleado || `${form.nombre || ''} ${form.apellido || ''}`.trim()}</td>
                                     <td className="py-2 px-4 border-b text-sm text-gray-800">{form.dni}</td>
                                     <td className="py-2 px-4 border-b text-sm text-gray-800">{form.email}</td>
-                                    <td className="py-2 px-4 border-b text-sm text-gray-800">{form.fechaInicio || form.fechaInasistenciaRP || form.fechaInasistenciaEstudio || '-'}</td>
-                                    <td className="py-2 px-4 border-b text-sm text-gray-800">{form.fechaFin || '-'}</td>
-                                    <td className="py-2 px-4 border-b text-sm text-gray-800">{form.cantidadDias || '-'}</td>
-                                    <td className="py-2 px-4 border-b text-sm text-gray-800">{form.archivoAdjunto ? 'Sí' : 'No'}</td>
+                                    <td className="py-2 px-4 border-b text-sm text-gray-800">{form.celular}</td>
                                     <td className="py-2 px-4 border-b text-sm text-gray-800">{new Date(form.timestamp).toLocaleString()}</td>
+                                    <td className="py-2 px-4 border-b text-sm text-gray-800 space-x-2 flex">
+                                        <button
+                                            onClick={() => handleWhatsApp(form)}
+                                            className="bg-green-500 hover:bg-green-600 text-white p-2 rounded-lg transition duration-300 ease-in-out transform hover:scale-110"
+                                            title="Enviar WhatsApp"
+                                        >
+                                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512" fill="currentColor" className="h-4 w-4">
+                                                <path d="M380.9 97.1C339.4 55.6 283.4 32 224 32S108.6 55.6 67.1 97.1 32 195.4 32 256c0 52.8 19 102.3 52.6 138.8L32 480l112-32 25.1 7.2c35.8 10.3 73.1 14.8 111.6 14.8 59.4 0 115.4-23.6 156.9-65.1S480 316.6 480 256c0-60.6-23.6-116.6-65.1-158.9zM224 432c-35.8 0-71.1-6.7-103.5-20.1L96 414.8 54.8 480l-20.1-133.5c-37.1-70.1-57.7-151.7-57.7-236.4 0-107 43-205.1 113.8-278.3 69.2-70.8 167.3-114.2 277.2-114.2 110.1 0 208.2 43.4 277.2 114.2 70.8 73.2 113.8 171.3 113.8 278.3 0 107-43 205.1-113.8 278.3-69.2 70.8-167.3 114.2-277.2 114.2-35.8 0-71.1-6.7-103.5-20.1zm-48.4-118.2l-37.8-13.8-19.3 22.8c-2.3 2.7-5.6 4-9.2 4-3.6 0-7-1.3-9.3-4l-15.6-18.4c-2.3-2.7-3.5-6.2-3.5-10.1 0-3.9 1.2-7.4 3.5-10.1l15.6-18.4c2.3-2.7 5.6-4 9.3-4h37.8c3.6 0 7 1.3 9.3 4l19.3 22.8c2.3 2.7 3.5 6.2 3.5 10.1 0 3.9-1.2 7.4-3.5 10.1l-15.6 18.4c-2.3 2.7-5.6 4-9.3 4zM240 313.8l-15.6-18.4c-2.3-2.7-5.6-4-9.3-4-3.6 0-7 1.3-9.3 4l-19.3 22.8c-2.3 2.7-3.5 6.2-3.5 10.1 0 3.9 1.2 7.4 3.5 10.1l15.6 18.4c2.3 2.7 5.6 4 9.3 4h37.8c3.6 0 7-1.3 9.3-4l19.3-22.8c2.3-2.7 3.5-6.2 3.5-10.1 0-3.9-1.2-7.4-3.5-10.1l-15.6-18.4c-2.3-2.7-5.6-4-9.3-4zM304.4 295.4l-15.6 18.4c-2.3 2.7-5.6 4-9.3 4-3.6 0-7-1.3-9.3-4l-19.3-22.8c-2.3-2.7-3.5-6.2-3.5-10.1 0-3.9 1.2-7.4 3.5-10.1l15.6-18.4c2.3-2.7 5.6-4 9.3-4h37.8c3.6 0 7 1.3 9.3 4l19.3 22.8c2.3 2.7 3.5 6.2 3.5 10.1 0 3.9-1.2 7.4-3.5 10.1z" />
+                                            </svg>
+                                        </button>
+                                        <button
+                                            onClick={() => confirmDelete(form.id)}
+                                            className="bg-red-500 hover:bg-red-600 text-white p-2 rounded-lg transition duration-300 ease-in-out transform hover:scale-110"
+                                            title="Eliminar Registro"
+                                        >
+                                            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                                                <path fillRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clipRule="evenodd" />
+                                            </svg>
+                                        </button>
+                                    </td>
                                 </tr>
                             ))}
                         </tbody>
                     </table>
                 </div>
             )}
-            <p className="mt-6 text-gray-600 text-sm text-center">
-                **Nota Importante:** El envío de correos electrónicos desde una aplicación web directamente no es seguro ni escalable.
-                En un entorno de producción, se utilizaría un servicio de backend (como Firebase Cloud Functions)
-                para manejar el envío de emails de forma segura y fiable.
-            </p>
+            
+            {/* Modal de confirmación de eliminación */}
+            {showDeleteConfirm && (
+                <div className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full flex items-center justify-center">
+                    <div className="bg-white p-8 rounded-lg shadow-xl max-w-sm w-full text-center">
+                        <h3 className="text-xl font-bold text-gray-800 mb-4">¿Estás seguro?</h3>
+                        <p className="text-gray-600 mb-6">Esta acción eliminará el registro de forma permanente. No se puede deshacer.</p>
+                        <div className="flex justify-center space-x-4">
+                            <button
+                                onClick={() => setShowDeleteConfirm(false)}
+                                className="bg-gray-300 hover:bg-gray-400 text-gray-800 font-bold py-2 px-4 rounded-lg transition duration-300"
+                            >
+                                Cancelar
+                            </button>
+                            <button
+                                onClick={handleDelete}
+                                className="bg-red-500 hover:bg-red-600 text-white font-bold py-2 px-4 rounded-lg transition duration-300"
+                            >
+                                Eliminar
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 });
@@ -1037,7 +1139,7 @@ function App() {
                     </form>
                 );
             case 'admin':
-                return <AdminPanel db={db} isAuthReady={isAuthReady} appId={appId} />;
+                return <AdminPanel db={db} isAuthReady={isAuthReady} appId={appId} setMessage={setMessage} setError={setError} />;
             case 'home':
             default:
                 return (
