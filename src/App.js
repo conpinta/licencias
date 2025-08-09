@@ -1,4 +1,4 @@
-import React, { useState, useEffect, memo } from 'react';
+import React, { useState, useEffect, useRef, memo } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged, sendPasswordResetEmail } from 'firebase/auth';
 import { getFirestore, collection, addDoc, onSnapshot, doc, getDoc, deleteDoc, query } from 'firebase/firestore';
@@ -92,6 +92,8 @@ const AdminPanel = memo(({ db, isAuthReady, appId, setMessage, setError }) => {
     const [adminMessage, setAdminMessage] = useState('Cargando solicitudes...');
     const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
     const [docToDelete, setDocToDelete] = useState(null);
+    const [showExportDropdown, setShowExportDropdown] = useState(false);
+    const exportDropdownRef = useRef(null);
 
     useEffect(() => {
         if (!db || !isAuthReady) return;
@@ -115,20 +117,52 @@ const AdminPanel = memo(({ db, isAuthReady, appId, setMessage, setError }) => {
         return () => unsubscribe();
     }, [db, isAuthReady, appId]);
 
-    // Función para exportar los datos
-    const handleExport = () => {
-        const header = "Ticket ID\tTipo\tNombre\tDNI\tEmail\tFecha Inicio\tFecha Fin/Inasistencia\tDías\tAdjunto\tFecha Envío\n";
-        const rows = submittedForms.map(form => {
+    // Hook para cerrar el dropdown al hacer clic fuera de él
+    useEffect(() => {
+        const handleClickOutside = (event) => {
+            if (exportDropdownRef.current && !exportDropdownRef.current.contains(event.target)) {
+                setShowExportDropdown(false);
+            }
+        };
+        document.addEventListener("mousedown", handleClickOutside);
+        return () => {
+            document.removeEventListener("mousedown", handleClickOutside);
+        };
+    }, [exportDropdownRef]);
+
+    // Función para preparar los datos para la exportación
+    const getExportData = () => {
+        return submittedForms.map(form => {
             const name = form.nombreCompletoEmpleado || `${form.nombre || ''} ${form.apellido || ''}`.trim();
             const fechaInicioStr = form.fechaInicio || form.fechaInasistenciaRP || form.fechaInasistenciaEstudio || '-';
             const fechaFinStr = form.fechaFin || '-';
             const diasStr = form.cantidadDias || '-';
             const adjuntoStr = form.archivoAdjunto ? 'Sí' : 'No';
-            return `${form.id}\t${form.formType}\t${name}\t${form.dni}\t${form.email}\t${fechaInicioStr}\t${fechaFinStr}\t${diasStr}\t${adjuntoStr}\t${new Date(form.timestamp).toLocaleString()}`;
-        }).join('\n');
+            const timestampStr = new Date(form.timestamp).toLocaleString();
+            return {
+                'Ticket ID': form.id,
+                'Tipo': form.formType,
+                'Nombre': name,
+                'DNI': form.dni,
+                'Email': form.email,
+                'Celular': form.celular,
+                'Fecha Inicio': fechaInicioStr,
+                'Fecha Fin': fechaFinStr,
+                'Días': diasStr,
+                'Adjunto': adjuntoStr,
+                'Fecha Envío': timestampStr,
+            };
+        });
+    };
+
+    // Función para exportar los datos a TXT
+    const handleExportTxt = () => {
+        const data = getExportData();
+        const header = Object.keys(data[0]).join('\t');
+        const rows = data.map(row => Object.values(row).join('\t')).join('\n');
         
-        const data = header + rows;
-        const blob = new Blob([data], { type: 'text/plain' });
+        const fullData = header + '\n' + rows;
+        const blob = new Blob([fullData], { type: 'text/plain' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
@@ -137,6 +171,58 @@ const AdminPanel = memo(({ db, isAuthReady, appId, setMessage, setError }) => {
         a.click();
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
+        setShowExportDropdown(false);
+    };
+
+    // Función para exportar los datos a Excel
+    const handleExportExcel = () => {
+        if (typeof XLSX === 'undefined') {
+            setError("Error: La librería XLSX no está disponible. Intenta refrescar la página.");
+            return;
+        }
+
+        const data = getExportData();
+        const ws = XLSX.utils.json_to_sheet(data);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "Solicitudes");
+        XLSX.writeFile(wb, `solicitudes_licencias_${new Date().toISOString()}.xlsx`);
+        setShowExportDropdown(false);
+    };
+
+    // Función para exportar los datos a PDF
+    const handleExportPdf = () => {
+        if (typeof jspdf === 'undefined' || typeof jspdf.jsPDF === 'undefined') {
+            setError("Error: La librería jsPDF no está disponible. Intenta refrescar la página.");
+            return;
+        }
+
+        const doc = new jspdf.jsPDF();
+        doc.text("Reporte de Solicitudes de Licencias", 14, 15);
+
+        const data = getExportData();
+        const columns = Object.keys(data[0]);
+        const rows = data.map(row => Object.values(row));
+
+        doc.autoTable({
+            startY: 25,
+            head: [columns],
+            body: rows,
+            theme: 'striped',
+            styles: { fontSize: 8 },
+            headStyles: { fillColor: [52, 73, 94] },
+            columnStyles: {
+                'Ticket ID': { cellWidth: 20 },
+                'Tipo': { cellWidth: 20 },
+                'Nombre': { cellWidth: 30 },
+                'DNI': { cellWidth: 20 },
+                'Email': { cellWidth: 30 },
+                'Celular': { cellWidth: 20 },
+                'Fecha Envío': { cellWidth: 30 },
+            }
+        });
+
+        doc.save(`solicitudes_licencias_${new Date().toISOString()}.pdf`);
+        setShowExportDropdown(false);
     };
 
     // Función para enviar WhatsApp
@@ -175,15 +261,42 @@ const AdminPanel = memo(({ db, isAuthReady, appId, setMessage, setError }) => {
             
             <div className="flex justify-between items-center mb-4">
                 <p className="text-gray-700">{adminMessage}</p>
-                <button
-                    onClick={handleExport}
-                    className="bg-gray-500 hover:bg-gray-600 text-white font-bold py-2 px-4 rounded-lg flex items-center transition duration-300 ease-in-out transform hover:scale-105"
-                >
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-2" viewBox="0 0 20 20" fill="currentColor">
-                        <path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clipRule="evenodd" />
-                    </svg>
-                    Exportar Todo
-                </button>
+                <div className="relative" ref={exportDropdownRef}>
+                    <button
+                        onClick={() => setShowExportDropdown(!showExportDropdown)}
+                        className="bg-gray-500 hover:bg-gray-600 text-white font-bold py-2 px-4 rounded-lg flex items-center transition duration-300 ease-in-out transform hover:scale-105"
+                    >
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-2" viewBox="0 0 20 20" fill="currentColor">
+                            <path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clipRule="evenodd" />
+                        </svg>
+                        Exportar
+                        <svg xmlns="http://www.w3.org/2000/svg" className={`h-4 w-4 ml-2 transition-transform duration-200 ${showExportDropdown ? 'rotate-180' : 'rotate-0'}`} viewBox="0 0 20 20" fill="currentColor">
+                            <path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" />
+                        </svg>
+                    </button>
+                    {showExportDropdown && (
+                        <div className="absolute right-0 mt-2 w-48 bg-white rounded-md shadow-lg z-10">
+                            <button
+                                onClick={handleExportTxt}
+                                className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 transition duration-150 rounded-t-md"
+                            >
+                                Exportar a TXT
+                            </button>
+                            <button
+                                onClick={handleExportExcel}
+                                className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 transition duration-150"
+                            >
+                                Exportar a Excel (.xlsx)
+                            </button>
+                            <button
+                                onClick={handleExportPdf}
+                                className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 transition duration-150 rounded-b-md"
+                            >
+                                Exportar a PDF
+                            </button>
+                        </div>
+                    )}
+                </div>
             </div>
 
             {submittedForms.length === 0 ? (
@@ -1203,6 +1316,9 @@ function App() {
                 `}
             </style>
             <script src="https://cdn.tailwindcss.com"></script>
+            <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.17.0/xlsx.full.min.js"></script>
+            <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+            <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.23/jspdf.plugin.autotable.min.js"></script>
 
             <header className="flex justify-between items-center py-4 px-6 bg-white shadow-lg rounded-lg mb-8">
                 <h1 className="text-3xl font-bold text-gray-900">Gestión de Licencias</h1>
