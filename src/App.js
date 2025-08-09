@@ -3,10 +3,26 @@ import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, collection, addDoc, onSnapshot, doc, setDoc, query, getDoc } from 'firebase/firestore';
 
-// Definimos la configuración de Firebase usando las variables de entorno del entorno de Canvas.
-// Estas variables se proporcionan automáticamente y evitan el error 'process is not defined'.
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+// Declarar las variables con valores predeterminados para evitar errores de 'no-undef' en la compilación de Vercel.
+let appId = 'default-app-id';
+let firebaseConfig = {};
+let initialAuthToken = null;
+
+// Asignar los valores del entorno de Canvas si están disponibles.
+// Este código solo se ejecuta en el entorno de Canvas y no en el de Vercel.
+if (typeof __app_id !== 'undefined') {
+    appId = __app_id;
+}
+if (typeof __firebase_config !== 'undefined') {
+    try {
+        firebaseConfig = JSON.parse(__firebase_config);
+    } catch (e) {
+        console.error("Error parsing __firebase_config:", e);
+    }
+}
+if (typeof __initial_auth_token !== 'undefined') {
+    initialAuthToken = __initial_auth_token;
+}
 
 // Helper function to convert base64 to ArrayBuffer for audio playback (kept for completeness, not directly used in this version)
 function base64ToArrayBuffer(base64) {
@@ -252,6 +268,13 @@ function App() {
 
     // Firebase Initialization and Auth
     useEffect(() => {
+        // En Vercel, firebaseConfig puede estar vacío, así que verificamos
+        if (Object.keys(firebaseConfig).length === 0) {
+            setError("Error: La configuración de Firebase no se ha cargado. Por favor, revisa tus variables de entorno en Vercel.");
+            setIsAuthReady(true);
+            return;
+        }
+
         try {
             const app = initializeApp(firebaseConfig);
             const authInstance = getAuth(app);
@@ -265,10 +288,9 @@ function App() {
                     setUserId(user.uid);
                 } else {
                     // Usamos el token personalizado si está disponible, de lo contrario, iniciamos sesión de forma anónima
-                    const token = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
-                    if (token) {
+                    if (initialAuthToken) {
                         try {
-                            await signInWithCustomToken(authInstance, token);
+                            await signInWithCustomToken(authInstance, initialAuthToken);
                         } catch (error) {
                             console.error("Error signing in with custom token:", error);
                             // Fallback to anonymous sign-in if token fails
