@@ -325,6 +325,117 @@ const AuthForm = ({ auth, setMessage, setError, setUserId }) => {
     );
 };
 
+// Nuevo componente para la vista de éxito
+const SuccessView = ({ submittedFormInfo, resetApp, userId }) => {
+    const { formData, ticketNumber } = submittedFormInfo;
+
+    // Función para generar el texto del mensaje para descargar/compartir
+    const generateMessageText = () => {
+        let message = `*Confirmación de Solicitud de Licencia*\n\n`;
+        message += `*Número de Ticket:* ${ticketNumber}\n`;
+        message += `*Tipo de Solicitud:* ${formData.formType}\n`;
+        message += `*Nombre:* ${formData.nombreCompletoEmpleado || `${formData.nombre || ''} ${formData.apellido || ''}`.trim()}\n`;
+        message += `*DNI:* ${formData.dni}\n`;
+        message += `*Correo Electrónico:* ${formData.email}\n`;
+        message += `*Fecha de Envío:* ${new Date(formData.timestamp).toLocaleString()}\n`;
+        
+        if (formData.fechaInicio) message += `*Fecha de Inicio:* ${formData.fechaInicio}\n`;
+        if (formData.fechaFin) message += `*Fecha de Fin:* ${formData.fechaFin}\n`;
+        if (formData.fechaInasistenciaRP) message += `*Fecha de Inasistencia:* ${formData.fechaInasistenciaRP}\n`;
+        if (formData.cantidadDias) message += `*Cantidad de Días:* ${formData.cantidadDias}\n`;
+        if (formData.archivoAdjunto) message += `*Archivo Adjunto:* ${formData.archivoAdjunto}\n`;
+        message += `*ID de Usuario:* ${userId}\n`;
+        message += `\nGracias por usar nuestro servicio.\n`;
+
+        return message;
+    };
+
+    // Función para descargar el archivo
+    const handleDownload = () => {
+        const text = generateMessageText();
+        const blob = new Blob([text], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `ticket-${ticketNumber}.txt`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    };
+
+    // Función para compartir por WhatsApp
+    const handleWhatsApp = () => {
+        const text = generateMessageText();
+        const whatsappUrl = `https://wa.me/?text=${encodeURIComponent(text)}`;
+        window.open(whatsappUrl, '_blank');
+    };
+
+    // Función para enviar por correo electrónico
+    const handleEmail = () => {
+        const subject = encodeURIComponent(`Confirmación de Solicitud de Licencia - Ticket #${ticketNumber}`);
+        const body = encodeURIComponent(generateMessageText());
+        const emailUrl = `mailto:${formData.email}?subject=${subject}&body=${body}`;
+        window.location.href = emailUrl;
+    };
+
+    return (
+        <div className="p-6 bg-white rounded-lg shadow-md max-w-2xl mx-auto my-8 text-center">
+            <h2 className="text-3xl font-bold mb-4 text-green-600">¡Solicitud Enviada con Éxito! 🎉</h2>
+            <p className="text-lg text-gray-700 mb-6">Tu solicitud ha sido registrada.</p>
+            <div className="bg-gray-100 p-6 rounded-lg mb-6 text-left">
+                <p className="text-sm text-gray-600 mb-2">Aquí están los detalles de tu solicitud:</p>
+                <p className="text-xl font-mono text-gray-800">
+                    <span className="font-bold">Número de Ticket:</span> {ticketNumber}
+                </p>
+                <p className="text-md text-gray-800">
+                    <span className="font-bold">Tipo de Solicitud:</span> {formData.formType}
+                </p>
+                <p className="text-md text-gray-800">
+                    <span className="font-bold">Nombre Completo:</span> {formData.nombreCompletoEmpleado || `${formData.nombre || ''} ${formData.apellido || ''}`.trim()}
+                </p>
+            </div>
+            <p className="text-lg text-gray-700 mb-4">Puedes guardar una copia o compartirla:</p>
+            <div className="flex flex-col sm:flex-row justify-center gap-4">
+                <button
+                    onClick={handleDownload}
+                    className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg transition duration-300 ease-in-out transform hover:scale-105 flex items-center justify-center"
+                >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-2" viewBox="0 0 20 20" fill="currentColor">
+                        <path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clipRule="evenodd" />
+                    </svg>
+                    Descargar
+                </button>
+                <button
+                    onClick={handleEmail}
+                    className="bg-yellow-500 hover:bg-yellow-600 text-white font-bold py-2 px-4 rounded-lg transition duration-300 ease-in-out transform hover:scale-105 flex items-center justify-center"
+                >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-2" viewBox="0 0 20 20" fill="currentColor">
+                        <path d="M2.003 5.884L10 9.882l7.997-3.998A2 2 0 0016 4H4a2 2 0 00-1.997 1.884z" />
+                        <path d="M18 8.118l-8 4-8-4V14a2 2 0 002 2h12a2 2 0 002-2V8.118z" />
+                    </svg>
+                    Enviar por Email
+                </button>
+                <button
+                    onClick={handleWhatsApp}
+                    className="bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-4 rounded-lg transition duration-300 ease-in-out transform hover:scale-105 flex items-center justify-center"
+                >
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512" fill="currentColor" className="h-5 w-5 mr-2">
+                        <path d="M380.9 97.1C339.4 55.6 283.4 32 224 32S108.6 55.6 67.1 97.1 32 195.4 32 256c0 52.8 19 102.3 52.6 138.8L32 480l112-32 25.1 7.2c35.8 10.3 73.1 14.8 111.6 14.8 59.4 0 115.4-23.6 156.9-65.1S480 316.6 480 256c0-60.6-23.6-116.6-65.1-158.9zM224 432c-35.8 0-71.1-6.7-103.5-20.1L96 414.8 54.8 480l-20.1-133.5c-37.1-70.1-57.7-151.7-57.7-236.4 0-107 43-205.1 113.8-278.3 69.2-70.8 167.3-114.2 277.2-114.2 110.1 0 208.2 43.4 277.2 114.2 70.8 73.2 113.8 171.3 113.8 278.3 0 107-43 205.1-113.8 278.3-69.2 70.8-167.3 114.2-277.2 114.2-35.8 0-71.1-6.7-103.5-20.1zm-48.4-118.2l-37.8-13.8-19.3 22.8c-2.3 2.7-5.6 4-9.2 4-3.6 0-7-1.3-9.3-4l-15.6-18.4c-2.3-2.7-3.5-6.2-3.5-10.1 0-3.9 1.2-7.4 3.5-10.1l15.6-18.4c2.3-2.7 5.6-4 9.3-4h37.8c3.6 0 7 1.3 9.3 4l19.3 22.8c2.3 2.7 3.5 6.2 3.5 10.1 0 3.9-1.2 7.4-3.5 10.1l-15.6 18.4c-2.3 2.7-5.6 4-9.3 4zM240 313.8l-15.6-18.4c-2.3-2.7-5.6-4-9.3-4-3.6 0-7 1.3-9.3 4l-19.3 22.8c-2.3 2.7-3.5 6.2-3.5 10.1 0 3.9 1.2 7.4 3.5 10.1l15.6 18.4c2.3 2.7 5.6 4 9.3 4h37.8c3.6 0 7-1.3 9.3-4l19.3-22.8c2.3-2.7 3.5-6.2 3.5-10.1 0-3.9-1.2-7.4-3.5-10.1l-15.6-18.4c-2.3-2.7-5.6-4-9.3-4zM304.4 295.4l-15.6 18.4c-2.3 2.7-5.6 4-9.3 4-3.6 0-7-1.3-9.3-4l-19.3-22.8c-2.3-2.7-3.5-6.2-3.5-10.1 0-3.9 1.2-7.4 3.5-10.1l15.6-18.4c2.3-2.7 5.6-4 9.3-4h37.8c3.6 0 7 1.3 9.3 4l19.3 22.8c2.3 2.7 3.5 6.2 3.5 10.1 0 3.9-1.2 7.4-3.5 10.1z" />
+                    </svg>
+                    Enviar por WhatsApp
+                </button>
+            </div>
+            <button
+                onClick={resetApp}
+                className="mt-8 bg-gray-500 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-lg transition duration-300 ease-in-out transform hover:scale-105"
+            >
+                Volver al Menú Principal
+            </button>
+        </div>
+    );
+};
+
 function App() {
     const [db, setDb] = useState(null);
     const [auth, setAuth] = useState(null);
@@ -336,6 +447,7 @@ function App() {
     const [loading, setLoading] = useState(false);
     const [message, setMessage] = useState('');
     const [error, setError] = useState(null);
+    const [submittedFormInfo, setSubmittedFormInfo] = useState(null);
 
     // State for common form fields
     const [nombre, setNombre] = useState('');
@@ -442,30 +554,6 @@ function App() {
         }
     };
 
-    // Función para simular el envío de un correo electrónico
-    const sendConfirmationEmail = async (formData, ticketNumber) => {
-        console.log(`Simulación de envío de correo electrónico a: ${formData.email}`);
-        console.log('--------------------------------------------------');
-        console.log(`Asunto: Confirmación de Solicitud de Licencia - Ticket #${ticketNumber}`);
-        console.log(`Hola ${formData.nombre || 'empleado'},`);
-        console.log('');
-        console.log('Hemos recibido tu solicitud de licencia con los siguientes detalles:');
-        console.log('');
-        console.log(`- Tipo de Solicitud: ${formData.formType}`);
-        console.log(`- Nombre: ${formData.nombre || formData.nombreCompletoEmpleado}`);
-        console.log(`- DNI: ${formData.dni}`);
-        console.log(`- Fecha de Solicitud: ${new Date(formData.timestamp).toLocaleString()}`);
-        if (formData.fechaInicio) console.log(`- Fecha de Inicio: ${formData.fechaInicio}`);
-        if (formData.fechaFin) console.log(`- Fecha de Fin: ${formData.fechaFin}`);
-        if (formData.fechaInasistenciaRP) console.log(`- Fecha de Inasistencia: ${formData.fechaInasistenciaRP}`);
-        if (formData.cantidadDias) console.log(`- Cantidad de Días: ${formData.cantidadDias}`);
-        if (formData.archivoAdjunto) console.log(`- Archivo Adjunto: ${formData.archivoAdjunto}`);
-        console.log('');
-        console.log('Guardar este correo como registro.');
-        console.log('Gracias.');
-        console.log('--------------------------------------------------');
-    };
-
     const handleSubmit = async (e, formType) => {
         e.preventDefault();
         if (!db || !userId) {
@@ -537,12 +625,15 @@ function App() {
         try {
             const docRef = await addDoc(collection(db, `artifacts/${appId}/public/data/allLicencias`), formData);
             const ticketNumber = docRef.id;
-            await sendConfirmationEmail(formData, ticketNumber);
 
-            setMessage(`Solicitud de ${formType} enviada con éxito! Tu número de ticket es: ${ticketNumber}. Se ha enviado un correo electrónico de confirmación a ${email}.`);
+            // Almacenar la información del formulario para la vista de éxito
+            setSubmittedFormInfo({ formData, ticketNumber });
             
+            // Cambiar a la vista de éxito
+            setCurrentView('success');
+
+            // Limpiar el formulario
             resetForm();
-            setCurrentView('home');
         } catch (err) {
             console.error("Error al enviar la solicitud:", err);
             setMessage(`Error al enviar la solicitud: ${err.message}`);
@@ -571,6 +662,13 @@ function App() {
         setFechaInasistenciaRP('');
         setFechaInasistenciaEstudio('');
     };
+    
+    // Función para resetear toda la aplicación y volver a la página de inicio
+    const resetApp = () => {
+        resetForm();
+        setSubmittedFormInfo(null);
+        setCurrentView('home');
+    };
 
     const renderForm = () => {
         if (error) {
@@ -592,6 +690,11 @@ function App() {
         if (!user) {
             // Si no hay un usuario autenticado, mostramos el formulario de login/registro
             return <AuthForm auth={auth} setMessage={setMessage} setError={setError} setUserId={setUserId} />;
+        }
+        
+        // Renderizar la vista de éxito si existe la información del formulario
+        if (currentView === 'success' && submittedFormInfo) {
+            return <SuccessView submittedFormInfo={submittedFormInfo} resetApp={resetApp} userId={userId} />;
         }
 
         switch (currentView) {
@@ -1003,7 +1106,7 @@ function App() {
                 <h1 className="text-3xl font-bold text-gray-900">Gestión de Licencias</h1>
                 {user && (
                     <div className="flex space-x-4">
-                        {currentView !== 'home' && (
+                        {currentView !== 'home' && currentView !== 'success' && (
                             <button
                                 onClick={() => {
                                     setCurrentView('home');
