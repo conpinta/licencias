@@ -1,17 +1,13 @@
 import React, { useState, useEffect, memo } from 'react';
 import { initializeApp } from 'firebase/app';
-import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut } from 'firebase/auth';
-import { getFirestore, collection, addDoc, onSnapshot, doc, setDoc, query, getDoc } from 'firebase/firestore';
+import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged, sendPasswordResetEmail } from 'firebase/auth';
+import { getFirestore, collection, addDoc, onSnapshot, doc, getDoc, query } from 'firebase/firestore';
 
-// Declarar las variables con valores predeterminados para evitar errores de 'no-undef' en la compilación de Vercel.
+// Variables globales para la configuración de Firebase
 let appId = 'default-app-id';
 let firebaseConfig = {};
-let initialAuthToken = null;
 
-// En entornos de producción como Vercel, las variables de entorno son accesibles a través de process.env
-// En el entorno de Canvas, se usan las variables globales ___.
-// Este código es robusto y funciona en ambos casos.
-// Utiliza window.__ para acceder a las variables globales de Canvas.
+// Obtener la configuración de Firebase desde el entorno de Canvas o variables de entorno
 if (typeof window !== 'undefined' && typeof window.__firebase_config !== 'undefined') {
     try {
         firebaseConfig = JSON.parse(window.__firebase_config);
@@ -27,9 +23,6 @@ if (typeof window !== 'undefined' && typeof window.__firebase_config !== 'undefi
 }
 if (typeof window !== 'undefined' && typeof window.__app_id !== 'undefined') {
     appId = window.__app_id;
-}
-if (typeof window !== 'undefined' && typeof window.__initial_auth_token !== 'undefined') {
-    initialAuthToken = window.__initial_auth_token;
 }
 
 // Componente para los campos comunes del formulario (memoized para evitar re-renders innecesarios)
@@ -172,12 +165,14 @@ const AdminPanel = memo(({ db, isAuthReady, appId }) => {
     );
 });
 
-// Componente para el formulario de inicio de sesión
-const AuthForm = ({ auth, setIsAuthReady, setMessage, setError, setUserId, setView }) => {
+// Componente para el formulario de inicio de sesión/registro
+const AuthForm = ({ auth, setMessage, setError, setUserId }) => {
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [isRegistering, setIsRegistering] = useState(false);
+    const [showForgotPassword, setShowForgotPassword] = useState(false); // Nuevo estado para la recuperación
 
+    // Función para manejar el inicio de sesión o registro
     const handleAuth = async (e) => {
         e.preventDefault();
         setMessage('');
@@ -190,7 +185,7 @@ const AuthForm = ({ auth, setIsAuthReady, setMessage, setError, setUserId, setVi
         try {
             if (isRegistering) {
                 await createUserWithEmailAndPassword(auth, email, password);
-                setMessage('Usuario registrado con éxito. Inicia sesión ahora.');
+                setMessage('Usuario registrado con éxito. Ahora puedes iniciar sesión.');
                 setIsRegistering(false);
             } else {
                 const userCredential = await signInWithEmailAndPassword(auth, email, password);
@@ -203,59 +198,129 @@ const AuthForm = ({ auth, setIsAuthReady, setMessage, setError, setUserId, setVi
         }
     };
 
+    // Función para manejar la recuperación de contraseña
+    const handlePasswordReset = async (e) => {
+        e.preventDefault();
+        setMessage('');
+        setError(null);
+        if (!auth) {
+            setError("Error: Firebase Auth no está inicializado.");
+            return;
+        }
+
+        try {
+            await sendPasswordResetEmail(auth, email);
+            setMessage('Se ha enviado un enlace de recuperación de contraseña a tu correo electrónico.');
+            setShowForgotPassword(false);
+        } catch (err) {
+            console.error("Error sending password reset email:", err);
+            setError(`Error al enviar el correo: ${err.message}. Asegúrate de que el correo electrónico sea correcto.`);
+        }
+    };
+
     return (
         <div className="p-6 bg-white rounded-lg shadow-md max-w-sm mx-auto my-8">
-            <h2 className="text-2xl font-bold mb-6 text-center text-gray-800">{isRegistering ? 'Registrarse' : 'Iniciar Sesión'}</h2>
-            <div className="flex justify-center mb-4">
-                <button
-                    onClick={() => setIsRegistering(false)}
-                    className={`px-4 py-2 rounded-l-lg font-bold ${!isRegistering ? 'bg-blue-500 text-white' : 'bg-gray-200 text-gray-700'}`}
-                >
-                    Iniciar Sesión
-                </button>
-                <button
-                    onClick={() => setIsRegistering(true)}
-                    className={`px-4 py-2 rounded-r-lg font-bold ${isRegistering ? 'bg-blue-500 text-white' : 'bg-gray-200 text-gray-700'}`}
-                >
-                    Registrarse
-                </button>
-            </div>
-            <form onSubmit={handleAuth}>
-                <div className="mb-4">
-                    <label className="block text-gray-700 text-sm font-bold mb-2" htmlFor="email">
-                        Correo Electrónico
-                    </label>
-                    <input
-                        className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500"
-                        id="email"
-                        type="email"
-                        value={email}
-                        onChange={(e) => setEmail(e.target.value)}
-                        required
-                    />
-                </div>
-                <div className="mb-6">
-                    <label className="block text-gray-700 text-sm font-bold mb-2" htmlFor="password">
-                        Contraseña
-                    </label>
-                    <input
-                        className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500"
-                        id="password"
-                        type="password"
-                        value={password}
-                        onChange={(e) => setPassword(e.target.value)}
-                        required
-                    />
-                </div>
-                <div className="flex items-center justify-between">
+            <h2 className="text-2xl font-bold mb-6 text-center text-gray-800">
+                {showForgotPassword ? 'Recuperar Contraseña' : (isRegistering ? 'Registrarse' : 'Iniciar Sesión')}
+            </h2>
+
+            {showForgotPassword ? (
+                // Formulario de recuperación de contraseña
+                <form onSubmit={handlePasswordReset}>
+                    <div className="mb-4">
+                        <label className="block text-gray-700 text-sm font-bold mb-2" htmlFor="email">
+                            Correo Electrónico
+                        </label>
+                        <input
+                            className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            id="email"
+                            type="email"
+                            placeholder="Tu correo electrónico"
+                            value={email}
+                            onChange={(e) => setEmail(e.target.value)}
+                            required
+                        />
+                    </div>
+                    <div className="flex items-center justify-between">
+                        <button
+                            className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg focus:outline-none focus:shadow-outline w-full transition duration-300 ease-in-out transform hover:scale-105"
+                            type="submit"
+                        >
+                            Enviar Enlace de Recuperación
+                        </button>
+                    </div>
                     <button
-                        className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg focus:outline-none focus:shadow-outline w-full transition duration-300 ease-in-out transform hover:scale-105"
-                        type="submit"
+                        type="button"
+                        onClick={() => setShowForgotPassword(false)}
+                        className="mt-4 w-full text-center text-sm text-gray-600 hover:text-gray-800"
                     >
-                        {isRegistering ? 'Registrarse' : 'Iniciar Sesión'}
+                        Volver a Iniciar Sesión
                     </button>
-                </div>
-            </form>
+                </form>
+            ) : (
+                // Formulario de inicio de sesión/registro
+                <>
+                    <div className="flex justify-center mb-4">
+                        <button
+                            onClick={() => setIsRegistering(false)}
+                            className={`px-4 py-2 rounded-l-lg font-bold ${!isRegistering ? 'bg-blue-500 text-white' : 'bg-gray-200 text-gray-700'}`}
+                        >
+                            Iniciar Sesión
+                        </button>
+                        <button
+                            onClick={() => setIsRegistering(true)}
+                            className={`px-4 py-2 rounded-r-lg font-bold ${isRegistering ? 'bg-blue-500 text-white' : 'bg-gray-200 text-gray-700'}`}
+                        >
+                            Registrarse
+                        </button>
+                    </div>
+                    <form onSubmit={handleAuth}>
+                        <div className="mb-4">
+                            <label className="block text-gray-700 text-sm font-bold mb-2" htmlFor="email">
+                                Correo Electrónico
+                            </label>
+                            <input
+                                className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                id="email"
+                                type="email"
+                                value={email}
+                                onChange={(e) => setEmail(e.target.value)}
+                                required
+                            />
+                        </div>
+                        <div className="mb-2">
+                            <label className="block text-gray-700 text-sm font-bold mb-2" htmlFor="password">
+                                Contraseña
+                            </label>
+                            <input
+                                className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                id="password"
+                                type="password"
+                                value={password}
+                                onChange={(e) => setPassword(e.target.value)}
+                                required
+                            />
+                        </div>
+                        <div className="mb-6 text-right">
+                            <button
+                                type="button"
+                                onClick={() => setShowForgotPassword(true)}
+                                className="inline-block align-baseline text-sm text-blue-500 hover:text-blue-800"
+                            >
+                                ¿Olvidaste tu contraseña?
+                            </button>
+                        </div>
+                        <div className="flex items-center justify-between">
+                            <button
+                                className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg focus:outline-none focus:shadow-outline w-full transition duration-300 ease-in-out transform hover:scale-105"
+                                type="submit"
+                            >
+                                {isRegistering ? 'Registrarse' : 'Iniciar Sesión'}
+                            </button>
+                        </div>
+                    </form>
+                </>
+            )}
         </div>
     );
 };
@@ -263,7 +328,7 @@ const AuthForm = ({ auth, setIsAuthReady, setMessage, setError, setUserId, setVi
 function App() {
     const [db, setDb] = useState(null);
     const [auth, setAuth] = useState(null);
-    const [user, setUser] = useState(null); // Nuevo estado para el usuario autenticado
+    const [user, setUser] = useState(null);
     const [userId, setUserId] = useState(null);
     const [isAuthReady, setIsAuthReady] = useState(false);
     const [isAdmin, setIsAdmin] = useState(false);
@@ -526,7 +591,7 @@ function App() {
 
         if (!user) {
             // Si no hay un usuario autenticado, mostramos el formulario de login/registro
-            return <AuthForm auth={auth} setIsAuthReady={setIsAuthReady} setMessage={setMessage} setError={setError} setUserId={setUserId} />;
+            return <AuthForm auth={auth} setMessage={setMessage} setError={setError} setUserId={setUserId} />;
         }
 
         switch (currentView) {
@@ -936,7 +1001,7 @@ function App() {
 
             <header className="flex justify-between items-center py-4 px-6 bg-white shadow-lg rounded-lg mb-8">
                 <h1 className="text-3xl font-bold text-gray-900">Gestión de Licencias</h1>
-                {user && ( // Solo mostramos estos botones si el usuario está autenticado
+                {user && (
                     <div className="flex space-x-4">
                         {currentView !== 'home' && (
                             <button
