@@ -617,13 +617,17 @@ const SuccessView = ({ submittedFormInfo, resetApp, userId }) => {
         message += `*Nombre:* ${formData.nombreCompletoEmpleado || `${formData.nombre || ''} ${formData.apellido || ''}`.trim()}\n`;
         message += `*DNI:* ${formData.dni}\n`;
         message += `*Correo Electrónico:* ${formData.email}\n`;
+        if (formData.archivoAdjunto) {
+            message += `*Archivo Adjunto:* Sí (${formData.archivoAdjunto})\n`;
+        } else {
+            message += `*Archivo Adjunto:* No\n`;
+        }
         message += `*Fecha de Envío:* ${new Date(formData.timestamp).toLocaleString()}\n`;
         
         if (formData.fechaInicio) message += `*Fecha de Inicio:* ${formData.fechaInicio}\n`;
         if (formData.fechaFin) message += `*Fecha de Fin:* ${formData.fechaFin}\n`;
         if (formData.fechaInasistenciaRP) message += `*Fecha de Inasistencia:* ${formData.fechaInasistenciaRP}\n`;
         if (formData.cantidadDias) message += `*Cantidad de Días:* ${formData.cantidadDias}\n`;
-        if (formData.archivoAdjunto) message += `*Archivo Adjunto:* ${formData.archivoAdjunto}\n`;
         message += `*ID de Usuario:* ${userId}\n`;
         message += `\nGracias por usar nuestro servicio.\n`;
 
@@ -740,7 +744,11 @@ function App() {
     const [fechaInicio, setFechaInicio] = useState('');
     const [fechaFin, setFechaFin] = useState('');
     const [cantidadDias, setCantidadDias] = useState('');
+    
+    // Estados para el manejo de archivos adjuntos
     const [archivoAdjunto, setArchivoAdjunto] = useState(null);
+    const [archivoAdjuntoURL, setArchivoAdjuntoURL] = useState(null);
+    const [uploadingFile, setUploadingFile] = useState(false);
 
     // Specific states for sick leave
     const [tipoLicenciaEnfermedad, setTipoLicenciaEnfermedad] = useState('');
@@ -834,6 +842,31 @@ function App() {
         }
     };
 
+    // Función para manejar el adjunto de archivos
+    const handleFileChange = (e) => {
+        const file = e.target.files[0];
+        if (file) {
+            setUploadingFile(true);
+            setArchivoAdjunto(file);
+            
+            // Crear una URL temporal para la previsualización
+            const fileURL = URL.createObjectURL(file);
+            setArchivoAdjuntoURL(fileURL);
+            
+            setUploadingFile(false);
+        } else {
+            setArchivoAdjunto(null);
+            setArchivoAdjuntoURL(null);
+        }
+    };
+
+    // Función para eliminar el archivo adjunto
+    const handleRemoveFile = () => {
+        setArchivoAdjunto(null);
+        setArchivoAdjuntoURL(null);
+        setMessage("Archivo adjunto eliminado.");
+    };
+
     const handleSubmit = async (e, formType) => {
         e.preventDefault();
         if (!db || !userId) {
@@ -857,6 +890,8 @@ function App() {
             fechaInicio,
             fechaFin,
             cantidadDias,
+            // Aquí es donde se manejaría la subida del archivo a Firebase Storage
+            // y se guardaría la URL de descarga. Para esta demo, solo guardamos el nombre.
             archivoAdjunto: archivoAdjunto ? archivoAdjunto.name : null,
         };
 
@@ -934,6 +969,8 @@ function App() {
         setFechaFin('');
         setCantidadDias('');
         setArchivoAdjunto(null);
+        setArchivoAdjuntoURL(null);
+        setUploadingFile(false);
         setTipoLicenciaEnfermedad('');
         setNombreEmpleadoEnfermedad('');
         setOtroNombreEmpleado('');
@@ -1074,15 +1111,47 @@ function App() {
                                 ))}
                             </select>
                         </div>
+
+                        {/* --- Campo para adjuntar archivo con previsualización --- */}
                         <div className="mb-6">
                             <label htmlFor="archivoAdjunto" className="block text-gray-700 text-sm font-bold mb-2">Certificado Médico (Adjuntar):</label>
                             <input
                                 type="file"
                                 id="archivoAdjunto"
                                 className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                onChange={(e) => setArchivoAdjunto(e.target.files[0])}
+                                onChange={handleFileChange}
+                                accept="image/*,application/pdf"
                             />
+                            {uploadingFile && (
+                                <p className="text-blue-500 text-sm mt-2">Cargando archivo...</p>
+                            )}
+                            {archivoAdjunto && (
+                                <div className="mt-4 p-4 border border-gray-300 rounded-lg flex items-center justify-between">
+                                    <div className="flex items-center space-x-3">
+                                        {archivoAdjunto.type.startsWith('image/') ? (
+                                            <img src={archivoAdjuntoURL} alt="Vista previa del certificado" className="h-12 w-12 object-cover rounded" />
+                                        ) : (
+                                            <svg xmlns="http://www.w3.org/2000/svg" className="h-12 w-12 text-red-500" viewBox="0 0 20 20" fill="currentColor">
+                                                <path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.414L16.586 7A2 2 0 0117 8.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 2h4l4 4v6H6V6z" clipRule="evenodd" />
+                                            </svg>
+                                        )}
+                                        <span className="text-sm font-medium text-gray-800">{archivoAdjunto.name}</span>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={handleRemoveFile}
+                                        className="text-red-500 hover:text-red-700"
+                                        title="Eliminar archivo"
+                                    >
+                                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                                            <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                                        </svg>
+                                    </button>
+                                </div>
+                            )}
                         </div>
+                        {/* --- Fin del campo de adjunto --- */}
+
                         <button
                             type="submit"
                             className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg focus:outline-none focus:shadow-outline w-full transition duration-300 ease-in-out transform hover:scale-105"
@@ -1298,15 +1367,47 @@ function App() {
                                 required
                             />
                         </div>
+                        
+                        {/* --- Campo para adjuntar archivo con previsualización --- */}
                         <div className="mb-6">
                             <label htmlFor="archivoAdjunto" className="block text-gray-700 text-sm font-bold mb-2">Certificado de Examen (Adjuntar):</label>
                             <input
                                 type="file"
                                 id="archivoAdjunto"
                                 className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                onChange={(e) => setArchivoAdjunto(e.target.files[0])}
+                                onChange={handleFileChange}
+                                accept="image/*,application/pdf"
                             />
+                            {uploadingFile && (
+                                <p className="text-blue-500 text-sm mt-2">Cargando archivo...</p>
+                            )}
+                            {archivoAdjunto && (
+                                <div className="mt-4 p-4 border border-gray-300 rounded-lg flex items-center justify-between">
+                                    <div className="flex items-center space-x-3">
+                                        {archivoAdjunto.type.startsWith('image/') ? (
+                                            <img src={archivoAdjuntoURL} alt="Vista previa del certificado" className="h-12 w-12 object-cover rounded" />
+                                        ) : (
+                                            <svg xmlns="http://www.w3.org/2000/svg" className="h-12 w-12 text-red-500" viewBox="0 0 20 20" fill="currentColor">
+                                                <path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.414L16.586 7A2 2 0 0117 8.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 2h4l4 4v6H6V6z" clipRule="evenodd" />
+                                            </svg>
+                                        )}
+                                        <span className="text-sm font-medium text-gray-800">{archivoAdjunto.name}</span>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={handleRemoveFile}
+                                        className="text-red-500 hover:text-red-700"
+                                        title="Eliminar archivo"
+                                    >
+                                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                                            <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                                        </svg>
+                                    </button>
+                                </div>
+                            )}
                         </div>
+                        {/* --- Fin del campo de adjunto --- */}
+
                         <button
                             type="submit"
                             className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg focus:outline-none focus:shadow-outline w-full transition duration-300 ease-in-out transform hover:scale-105"
