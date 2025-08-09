@@ -5,21 +5,23 @@ import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, si
 import { getFirestore, collection, addDoc, onSnapshot, doc, getDoc, deleteDoc, query } from 'firebase/firestore';
 import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 
-// Variables globales para la configuración de Firebase. Se obtienen del entorno de Canvas o Vercel.
-let appId = 'default-app-id';
+// Variables globales de Firebase que serán inicializadas en el useEffect
 let firebaseConfig = {};
 let initialAuthToken = '';
 
-// Obtener la configuración de Firebase
+// Obtener la configuración de Firebase desde el entorno de Canvas o Vercel
 if (typeof window !== 'undefined' && typeof window.__firebase_config !== 'undefined') {
     try {
         firebaseConfig = JSON.parse(window.__firebase_config);
     } catch (e) {
         console.error("Error parsing __firebase_config:", e);
     }
-}
-if (typeof window !== 'undefined' && typeof window.__app_id !== 'undefined') {
-    appId = window.__app_id;
+} else if (typeof process.env.REACT_APP_FIREBASE_CONFIG !== 'undefined') {
+    try {
+        firebaseConfig = JSON.parse(process.env.REACT_APP_FIREBASE_CONFIG);
+    } catch (e) {
+        console.error("Error parsing REACT_APP_FIREBASE_CONFIG:", e);
+    }
 }
 if (typeof window !== 'undefined' && typeof window.__initial_auth_token !== 'undefined') {
     initialAuthToken = window.__initial_auth_token;
@@ -465,7 +467,7 @@ export default function App() {
     const [error, setError] = useState('');
     const [message, setMessage] = useState('');
     const [currentView, setCurrentView] = useState('home');
-
+    
     // Estados para los campos comunes
     const [dni, setDni] = useState('');
     const [categoria, setCategoria] = useState('');
@@ -493,14 +495,14 @@ export default function App() {
     const [fechaInasistenciaRP, setFechaInasistenciaRP] = useState('');
     const [cantidadDiasRP, setCantidadDiasRP] = useState('');
 
-    // Estados de inicialización de Firebase
+    // Estados de inicialización de Firebase y App
     const [firebaseReady, setFirebaseReady] = useState(false);
     const [authReady, setAuthReady] = useState(false);
     const [app, setApp] = useState(null);
     const [db, setDb] = useState(null);
     const [auth, setAuth] = useState(null);
     const [storage, setStorage] = useState(null);
-
+    const [appId, setAppId] = useState('default-app-id');
 
     useEffect(() => {
         try {
@@ -511,6 +513,13 @@ export default function App() {
                 return;
             }
 
+            // Obtener el ID de la aplicación del entorno de Canvas
+            let currentAppId = 'default-app-id';
+            if (typeof window !== 'undefined' && typeof window.__app_id !== 'undefined') {
+                currentAppId = window.__app_id;
+            }
+            setAppId(currentAppId);
+            
             // Inicializar Firebase
             const initializedApp = initializeApp(firebaseConfig);
             const initializedDb = getFirestore(initializedApp);
