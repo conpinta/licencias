@@ -95,6 +95,53 @@ const AdminPanel = memo(({ db, isAuthReady, appId, setMessage, setError }) => {
     const [docToDelete, setDocToDelete] = useState(null);
     const [showExportDropdown, setShowExportDropdown] = useState(false);
     const exportDropdownRef = useRef(null);
+    
+    // Nuevos estados para controlar la carga de librerías
+    const [isXLSXLoaded, setIsXLSXLoaded] = useState(false);
+    const [isJSPdfLoaded, setIsJSPdfLoaded] = useState(false);
+    const [loadingLibraries, setLoadingLibraries] = useState(true);
+
+    // useEffect para cargar dinámicamente las librerías
+    useEffect(() => {
+        // Función para cargar un script
+        const loadScript = (src, onLoadCallback, onErrorCallback) => {
+            const script = document.createElement('script');
+            script.src = src;
+            script.async = true;
+            script.onload = onLoadCallback;
+            script.onerror = onErrorCallback;
+            document.head.appendChild(script);
+            return script;
+        };
+
+        // Cargar XLSX
+        const xlsxScript = loadScript(
+            "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.17.0/xlsx.full.min.js",
+            () => setIsXLSXLoaded(true),
+            () => setError("Error al cargar la librería de Excel.")
+        );
+
+        // Cargar jsPDF y luego autoTable
+        const jspdfScript = loadScript(
+            "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js",
+            () => {
+                loadScript(
+                    "https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.23/jspdf.plugin.autotable.min.js",
+                    () => {
+                        setIsJSPdfLoaded(true);
+                        setLoadingLibraries(false);
+                    },
+                    () => setError("Error al cargar la librería autoTable para PDF.")
+                );
+            },
+            () => setError("Error al cargar la librería jsPDF.")
+        );
+
+        return () => {
+            document.head.removeChild(xlsxScript);
+            document.head.removeChild(jspdfScript);
+        };
+    }, []);
 
     useEffect(() => {
         if (!db || !isAuthReady) return;
@@ -177,8 +224,8 @@ const AdminPanel = memo(({ db, isAuthReady, appId, setMessage, setError }) => {
 
     // Función para exportar los datos a Excel
     const handleExportExcel = () => {
-        if (typeof XLSX === 'undefined') {
-            setError("Error: La librería XLSX no está disponible. Intenta refrescar la página.");
+        if (!isXLSXLoaded) {
+            setError("Error: La librería XLSX aún no está disponible.");
             return;
         }
 
@@ -192,12 +239,14 @@ const AdminPanel = memo(({ db, isAuthReady, appId, setMessage, setError }) => {
 
     // Función para exportar los datos a PDF
     const handleExportPdf = () => {
-        if (typeof jspdf === 'undefined' || typeof jspdf.jsPDF === 'undefined') {
-            setError("Error: La librería jsPDF no está disponible. Intenta refrescar la página.");
+        if (!isJSPdfLoaded) {
+            setError("Error: La librería jsPDF aún no está disponible.");
             return;
         }
 
-        const doc = new jspdf.jsPDF();
+        const { jsPDF } = jspdf;
+        const doc = new jsPDF();
+        
         doc.text("Reporte de Solicitudes de Licencias", 14, 15);
 
         const data = getExportData();
@@ -266,14 +315,27 @@ const AdminPanel = memo(({ db, isAuthReady, appId, setMessage, setError }) => {
                     <button
                         onClick={() => setShowExportDropdown(!showExportDropdown)}
                         className="bg-gray-500 hover:bg-gray-600 text-white font-bold py-2 px-4 rounded-lg flex items-center transition duration-300 ease-in-out transform hover:scale-105"
+                        disabled={loadingLibraries}
                     >
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-2" viewBox="0 0 20 20" fill="currentColor">
-                            <path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clipRule="evenodd" />
-                        </svg>
-                        Exportar
-                        <svg xmlns="http://www.w3.org/2000/svg" className={`h-4 w-4 ml-2 transition-transform duration-200 ${showExportDropdown ? 'rotate-180' : 'rotate-0'}`} viewBox="0 0 20 20" fill="currentColor">
-                            <path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" />
-                        </svg>
+                        {loadingLibraries ? (
+                            <>
+                                <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                </svg>
+                                Cargando...
+                            </>
+                        ) : (
+                            <>
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-2" viewBox="0 0 20 20" fill="currentColor">
+                                    <path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clipRule="evenodd" />
+                                </svg>
+                                Exportar
+                                <svg xmlns="http://www.w3.org/2000/svg" className={`h-4 w-4 ml-2 transition-transform duration-200 ${showExportDropdown ? 'rotate-180' : 'rotate-0'}`} viewBox="0 0 20 20" fill="currentColor">
+                                    <path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" />
+                                </svg>
+                            </>
+                        )}
                     </button>
                     {showExportDropdown && (
                         <div className="absolute right-0 mt-2 w-48 bg-white rounded-md shadow-lg z-10">
@@ -285,13 +347,15 @@ const AdminPanel = memo(({ db, isAuthReady, appId, setMessage, setError }) => {
                             </button>
                             <button
                                 onClick={handleExportExcel}
-                                className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 transition duration-150"
+                                className={`block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 transition duration-150 ${!isXLSXLoaded ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                disabled={!isXLSXLoaded}
                             >
                                 Exportar a Excel (.xlsx)
                             </button>
                             <button
                                 onClick={handleExportPdf}
-                                className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 transition duration-150 rounded-b-md"
+                                className={`block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 transition duration-150 rounded-b-md ${!isJSPdfLoaded ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                disabled={!isJSPdfLoaded}
                             >
                                 Exportar a PDF
                             </button>
@@ -1317,9 +1381,6 @@ function App() {
                 `}
             </style>
             <script src="https://cdn.tailwindcss.com"></script>
-            <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.17.0/xlsx.full.min.js"></script>
-            <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-            <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.23/jspdf.plugin.autotable.min.js"></script>
 
             <header className="flex justify-between items-center py-4 px-6 bg-white shadow-lg rounded-lg mb-8">
                 <h1 className="text-3xl font-bold text-gray-900">Gestión de Licencias</h1>
