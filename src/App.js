@@ -11,26 +11,26 @@ let initialAuthToken = null;
 // En entornos de producción como Vercel, las variables de entorno son accesibles a través de process.env
 // En el entorno de Canvas, se usan las variables globales ___.
 // Este código es robusto y funciona en ambos casos.
-if (typeof process.env.REACT_APP_FIREBASE_CONFIG !== 'undefined') {
+// Utiliza window.__ para acceder a las variables globales de Canvas.
+if (typeof window !== 'undefined' && typeof window.__firebase_config !== 'undefined') {
+    try {
+        firebaseConfig = JSON.parse(window.__firebase_config);
+    } catch (e) {
+        console.error("Error parsing __firebase_config:", e);
+    }
+} else if (typeof process.env.REACT_APP_FIREBASE_CONFIG !== 'undefined') {
     try {
         firebaseConfig = JSON.parse(process.env.REACT_APP_FIREBASE_CONFIG);
     } catch (e) {
         console.error("Error parsing REACT_APP_FIREBASE_CONFIG:", e);
     }
-} else if (typeof __firebase_config !== 'undefined') {
-    try {
-        firebaseConfig = JSON.parse(__firebase_config);
-    } catch (e) {
-        console.error("Error parsing __firebase_config:", e);
-    }
 }
-if (typeof __app_id !== 'undefined') {
-    appId = __app_id;
+if (typeof window !== 'undefined' && typeof window.__app_id !== 'undefined') {
+    appId = window.__app_id;
 }
-if (typeof __initial_auth_token !== 'undefined') {
-    initialAuthToken = __initial_auth_token;
+if (typeof window !== 'undefined' && typeof window.__initial_auth_token !== 'undefined') {
+    initialAuthToken = window.__initial_auth_token;
 }
-
 
 // Helper function to convert base64 to ArrayBuffer for audio playback (kept for completeness, not directly used in this version)
 function base64ToArrayBuffer(base64) {
