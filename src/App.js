@@ -5,8 +5,31 @@ import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, si
 import { getFirestore, collection, addDoc, onSnapshot, doc, getDoc, deleteDoc, query } from 'firebase/firestore';
 import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 
-// Componente para los campos comunes del formulario (memoized para evitar re-renders innecesarios)
-const CommonFormFields = memo(({ dni, setDni, categoria, setCategoria, oficina, setOficina, email, setEmail, celular, setCelular }) => (
+// Variables globales para la configuración de Firebase. Se obtienen del entorno de Canvas o Vercel.
+let appId = 'default-app-id';
+let firebaseConfig = {};
+let initialAuthToken = '';
+
+// Obtener la configuración de Firebase
+if (typeof window !== 'undefined' && typeof window.__firebase_config !== 'undefined') {
+    try {
+        firebaseConfig = JSON.parse(window.__firebase_config);
+    } catch (e) {
+        console.error("Error parsing __firebase_config:", e);
+    }
+}
+if (typeof window !== 'undefined' && typeof window.__app_id !== 'undefined') {
+    appId = window.__app_id;
+}
+if (typeof window !== 'undefined' && typeof window.__initial_auth_token !== 'undefined') {
+    initialAuthToken = window.__initial_auth_token;
+}
+
+// Componente memoizado para los campos comunes del formulario
+const CommonFormFields = memo(({
+    dni, setDni, categoria, setCategoria, oficina, setOficina,
+    email, setEmail, celular, setCelular
+}) => (
     <>
         <div className="mb-4">
             <label htmlFor="dni" className="block text-gray-700 text-sm font-bold mb-2">DNI:</label>
@@ -80,6 +103,7 @@ const AdminPanel = memo(({ db, isAuthReady, appId, setMessage, setError }) => {
     const [loadingLibraries, setLoadingLibraries] = useState(true);
 
     useEffect(() => {
+        // Cargar librerías externas de forma asíncrona
         const loadScript = (src, onLoadCallback, onErrorCallback) => {
             const script = document.createElement('script');
             script.src = src;
@@ -118,7 +142,7 @@ const AdminPanel = memo(({ db, isAuthReady, appId, setMessage, setError }) => {
     }, [setError]);
 
     useEffect(() => {
-        if (!db || !isAuthReady) return;
+        if (!db || !isAuthReady || !appId) return;
 
         const q = query(collection(db, `artifacts/${appId}/public/data/allLicencias`));
         const unsubscribe = onSnapshot(q, (snapshot) => {
@@ -152,7 +176,7 @@ const AdminPanel = memo(({ db, isAuthReady, appId, setMessage, setError }) => {
     const getExportData = () => {
         return submittedForms.map(form => {
             const name = form.nombreCompletoEmpleado || `${form.nombre || ''} ${form.apellido || ''}`.trim();
-            const fechaInicioStr = form.fechaInicio || form.fechaInasistenciaRP || form.fechaInasistenciaEstudio || '-';
+            const fechaInicioStr = form.fechaInicio || form.fechaInasistenciaEstudio || '-';
             const fechaFinStr = form.fechaFin || '-';
             const diasStr = form.cantidadDias || '-';
             const adjuntoStr = form.archivoAdjunto ? 'Sí' : 'No';
@@ -442,12 +466,13 @@ export default function App() {
     const [message, setMessage] = useState('');
     const [currentView, setCurrentView] = useState('home');
 
-    // Estados para los formularios
+    // Estados para los campos comunes
     const [dni, setDni] = useState('');
     const [categoria, setCategoria] = useState('');
     const [oficina, setOficina] = useState('');
     const [celular, setCelular] = useState('');
-    const [nombreCompletoEmpleado, setNombreCompletoEmpleado] = useState('');
+    const [nombre, setNombre] = useState('');
+    const [apellido, setApellido] = useState('');
 
     // Estados para el formulario de Licencia por Estudio
     const [fechaInasistenciaEstudio, setFechaInasistenciaEstudio] = useState('');
@@ -457,8 +482,16 @@ export default function App() {
     // Estados para el formulario de Licencia por Enfermedad
     const [fechaInicio, setFechaInicio] = useState('');
     const [fechaFin, setFechaFin] = useState('');
-    const [adjuntoEnfermedad, setAdjuntoEnfermedad] = useState(null);
     const [diagnostico, setDiagnostico] = useState('');
+    const [adjuntoEnfermedad, setAdjuntoEnfermedad] = useState(null);
+    
+    // Estados para Licencia por Vacaciones
+    const [fechaInicioVacaciones, setFechaInicioVacaciones] = useState('');
+    const [fechaFinVacaciones, setFechaFinVacaciones] = useState('');
+
+    // Estados para Licencia por Razones Particulares
+    const [fechaInasistenciaRP, setFechaInasistenciaRP] = useState('');
+    const [cantidadDiasRP, setCantidadDiasRP] = useState('');
 
     // Estados de inicialización de Firebase
     const [firebaseReady, setFirebaseReady] = useState(false);
@@ -468,26 +501,9 @@ export default function App() {
     const [auth, setAuth] = useState(null);
     const [storage, setStorage] = useState(null);
 
+
     useEffect(() => {
         try {
-            // Variables globales para la configuración de Firebase
-            let firebaseConfig = {};
-            let appId = 'default-app-id';
-            let initialAuthToken = '';
-
-            // Obtener la configuración de Firebase desde el entorno de Canvas o Vercel
-            if (typeof window !== 'undefined' && typeof window.__firebase_config !== 'undefined') {
-                firebaseConfig = JSON.parse(window.__firebase_config);
-            } else if (typeof process !== 'undefined' && process.env.REACT_APP_FIREBASE_CONFIG) {
-                firebaseConfig = JSON.parse(process.env.REACT_APP_FIREBASE_CONFIG);
-            }
-            if (typeof window !== 'undefined' && typeof window.__app_id !== 'undefined') {
-                appId = window.__app_id;
-            }
-            if (typeof window !== 'undefined' && typeof window.__initial_auth_token !== 'undefined') {
-                initialAuthToken = window.__initial_auth_token;
-            }
-
             // Validar que la configuración no esté vacía
             if (Object.keys(firebaseConfig).length === 0) {
                 console.error("Firebase config is missing. App cannot be initialized.");
@@ -534,7 +550,44 @@ export default function App() {
         }
     }, []);
 
+    // Función para enviar formularios sin adjunto
+    const handleSubmit = async (event, formType, formData) => {
+        event.preventDefault();
+        setError('');
+        setMessage('');
 
+        if (!user) {
+            setError('Error: Usuario no autenticado.');
+            return;
+        }
+        if (!db) {
+            setError('Error: El servicio de base de datos no está disponible.');
+            return;
+        }
+
+        try {
+            const dataToSave = {
+                ...formData,
+                formType,
+                userId: user.uid,
+                timestamp: new Date().toISOString(),
+                nombreCompletoEmpleado: `${nombre} ${apellido}`.trim(),
+            };
+
+            const q = collection(db, `artifacts/${appId}/public/data/allLicencias`);
+            await addDoc(q, dataToSave);
+
+            setMessage('¡Formulario enviado con éxito!');
+            resetForm();
+            setCurrentView('success');
+
+        } catch (e) {
+            console.error("Error al enviar formulario: ", e);
+            setError(`Error al enviar el formulario: ${e.message}`);
+        }
+    };
+    
+    // Función para enviar formularios con adjunto
     const handleSubmitWithFile = async (event, formType, file, formData) => {
         event.preventDefault();
         setError('');
@@ -564,7 +617,7 @@ export default function App() {
                 userId: user.uid,
                 archivoAdjunto: downloadURL,
                 timestamp: new Date().toISOString(),
-                nombreCompletoEmpleado: nombreCompletoEmpleado || `${formData.nombre || ''} ${formData.apellido || ''}`.trim(),
+                nombreCompletoEmpleado: `${nombre} ${apellido}`.trim(),
             };
 
             const q = collection(db, `artifacts/${appId}/public/data/allLicencias`);
@@ -632,7 +685,8 @@ export default function App() {
         setOficina('');
         setEmail('');
         setCelular('');
-        setNombreCompletoEmpleado('');
+        setNombre('');
+        setApellido('');
         setFechaInasistenciaEstudio('');
         setCantidadDiasEstudio('');
         setAdjuntoEstudio(null);
@@ -640,6 +694,10 @@ export default function App() {
         setFechaFin('');
         setAdjuntoEnfermedad(null);
         setDiagnostico('');
+        setFechaInicioVacaciones('');
+        setFechaFinVacaciones('');
+        setFechaInasistenciaRP('');
+        setCantidadDiasRP('');
         setMessage('');
         setError('');
     };
@@ -707,12 +765,24 @@ export default function App() {
                     <div className="flex flex-col items-center justify-center space-y-4">
                         <h1 className="text-4xl font-extrabold text-gray-800">Bienvenido</h1>
                         <p className="text-xl text-gray-600 mb-8">Elige una opción para comenzar:</p>
-                        <div className="flex space-x-4">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <button
                                 onClick={() => setCurrentView('enfermedad')}
                                 className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-6 rounded-full transition-colors shadow-lg"
                             >
                                 Licencia por Enfermedad
+                            </button>
+                            <button
+                                onClick={() => setCurrentView('vacaciones')}
+                                className="bg-orange-600 hover:bg-orange-700 text-white font-bold py-3 px-6 rounded-full transition-colors shadow-lg"
+                            >
+                                Licencia por Vacaciones
+                            </button>
+                            <button
+                                onClick={() => setCurrentView('razonParticulares')}
+                                className="bg-cyan-600 hover:bg-cyan-700 text-white font-bold py-3 px-6 rounded-full transition-colors shadow-lg"
+                            >
+                                Licencia por Razones Particulares
                             </button>
                             <button
                                 onClick={() => setCurrentView('estudio')}
@@ -722,7 +792,7 @@ export default function App() {
                             </button>
                             <button
                                 onClick={() => setCurrentView('admin')}
-                                className="bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-6 rounded-full transition-colors shadow-lg"
+                                className="bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-6 rounded-full transition-colors shadow-lg md:col-span-2"
                             >
                                 Panel de Administración
                             </button>
@@ -735,8 +805,16 @@ export default function App() {
                     <div className="p-8 bg-white rounded-lg shadow-lg w-full max-w-md">
                         <h2 className="text-2xl font-bold mb-6 text-center text-gray-800">Formulario Licencia por Enfermedad</h2>
                         <form onSubmit={(e) => handleSubmitWithFile(e, 'enfermedad', adjuntoEnfermedad, {
-                            dni, categoria, oficina, email, celular, fechaInicio, fechaFin, diagnostico
+                            nombre, apellido, dni, categoria, oficina, email, celular, fechaInicio, fechaFin, diagnostico
                         })} className="space-y-4">
+                            <div className="mb-4">
+                                <label htmlFor="nombre" className="block text-gray-700 text-sm font-bold mb-2">Nombre:</label>
+                                <input type="text" id="nombre" value={nombre} onChange={(e) => setNombre(e.target.value)} className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500" required />
+                            </div>
+                            <div className="mb-4">
+                                <label htmlFor="apellido" className="block text-gray-700 text-sm font-bold mb-2">Apellido:</label>
+                                <input type="text" id="apellido" value={apellido} onChange={(e) => setApellido(e.target.value)} className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500" required />
+                            </div>
                             <CommonFormFields dni={dni} setDni={setDni} categoria={categoria} setCategoria={setCategoria} oficina={oficina} setOficina={setOficina} email={email} setEmail={setEmail} celular={celular} setCelular={setCelular} />
                             <div className="mb-4">
                                 <label htmlFor="fechaInicio" className="block text-gray-700 text-sm font-bold mb-2">Fecha de Inicio:</label>
@@ -766,8 +844,16 @@ export default function App() {
                     <div className="p-8 bg-white rounded-lg shadow-lg w-full max-w-md">
                         <h2 className="text-2xl font-bold mb-6 text-center text-gray-800">Formulario Licencia por Estudio</h2>
                         <form onSubmit={(e) => handleSubmitWithFile(e, 'estudio', adjuntoEstudio, {
-                            dni, categoria, oficina, email, celular, fechaInasistenciaEstudio, cantidadDiasEstudio
+                            nombre, apellido, dni, categoria, oficina, email, celular, fechaInasistenciaEstudio, cantidadDiasEstudio
                         })} className="space-y-4">
+                            <div className="mb-4">
+                                <label htmlFor="nombre" className="block text-gray-700 text-sm font-bold mb-2">Nombre:</label>
+                                <input type="text" id="nombre" value={nombre} onChange={(e) => setNombre(e.target.value)} className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500" required />
+                            </div>
+                            <div className="mb-4">
+                                <label htmlFor="apellido" className="block text-gray-700 text-sm font-bold mb-2">Apellido:</label>
+                                <input type="text" id="apellido" value={apellido} onChange={(e) => setApellido(e.target.value)} className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500" required />
+                            </div>
                             <CommonFormFields dni={dni} setDni={setDni} categoria={categoria} setCategoria={setCategoria} oficina={oficina} setOficina={setOficina} email={email} setEmail={setEmail} celular={celular} setCelular={setCelular} />
                             <div className="mb-4">
                                 <label htmlFor="fechaInasistenciaEstudio" className="block text-gray-700 text-sm font-bold mb-2">Fecha de Inasistencia:</label>
@@ -783,6 +869,68 @@ export default function App() {
                             </div>
                             <button type="submit" className="w-full bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-4 rounded-lg transition-colors">
                                 Enviar Licencia por Estudio
+                            </button>
+                        </form>
+                    </div>
+                );
+
+            case 'vacaciones':
+                return (
+                    <div className="p-8 bg-white rounded-lg shadow-lg w-full max-w-md">
+                        <h2 className="text-2xl font-bold mb-6 text-center text-gray-800">Formulario Licencia por Vacaciones</h2>
+                        <form onSubmit={(e) => handleSubmit(e, 'vacaciones', {
+                            nombre, apellido, dni, categoria, oficina, email, celular, fechaInicioVacaciones, fechaFinVacaciones
+                        })} className="space-y-4">
+                            <div className="mb-4">
+                                <label htmlFor="nombre" className="block text-gray-700 text-sm font-bold mb-2">Nombre:</label>
+                                <input type="text" id="nombre" value={nombre} onChange={(e) => setNombre(e.target.value)} className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500" required />
+                            </div>
+                            <div className="mb-4">
+                                <label htmlFor="apellido" className="block text-gray-700 text-sm font-bold mb-2">Apellido:</label>
+                                <input type="text" id="apellido" value={apellido} onChange={(e) => setApellido(e.target.value)} className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500" required />
+                            </div>
+                            <CommonFormFields dni={dni} setDni={setDni} categoria={categoria} setCategoria={setCategoria} oficina={oficina} setOficina={setOficina} email={email} setEmail={setEmail} celular={celular} setCelular={setCelular} />
+                            <div className="mb-4">
+                                <label htmlFor="fechaInicioVacaciones" className="block text-gray-700 text-sm font-bold mb-2">Fecha de Inicio:</label>
+                                <input type="date" id="fechaInicioVacaciones" value={fechaInicioVacaciones} onChange={(e) => setFechaInicioVacaciones(e.target.value)} className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500" required />
+                            </div>
+                            <div className="mb-4">
+                                <label htmlFor="fechaFinVacaciones" className="block text-gray-700 text-sm font-bold mb-2">Fecha de Fin:</label>
+                                <input type="date" id="fechaFinVacaciones" value={fechaFinVacaciones} onChange={(e) => setFechaFinVacaciones(e.target.value)} className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500" required />
+                            </div>
+                            <button type="submit" className="w-full bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-4 rounded-lg transition-colors">
+                                Enviar Solicitud
+                            </button>
+                        </form>
+                    </div>
+                );
+
+            case 'razonParticulares':
+                return (
+                    <div className="p-8 bg-white rounded-lg shadow-lg w-full max-w-md">
+                        <h2 className="text-2xl font-bold mb-6 text-center text-gray-800">Formulario Licencia por Razones Particulares</h2>
+                        <form onSubmit={(e) => handleSubmit(e, 'razonParticulares', {
+                            nombre, apellido, dni, categoria, oficina, email, celular, fechaInasistenciaRP, cantidadDiasRP
+                        })} className="space-y-4">
+                            <div className="mb-4">
+                                <label htmlFor="nombre" className="block text-gray-700 text-sm font-bold mb-2">Nombre:</label>
+                                <input type="text" id="nombre" value={nombre} onChange={(e) => setNombre(e.target.value)} className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500" required />
+                            </div>
+                            <div className="mb-4">
+                                <label htmlFor="apellido" className="block text-gray-700 text-sm font-bold mb-2">Apellido:</label>
+                                <input type="text" id="apellido" value={apellido} onChange={(e) => setApellido(e.target.value)} className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500" required />
+                            </div>
+                            <CommonFormFields dni={dni} setDni={setDni} categoria={categoria} setCategoria={setCategoria} oficina={oficina} setOficina={setOficina} email={email} setEmail={setEmail} celular={celular} setCelular={setCelular} />
+                            <div className="mb-4">
+                                <label htmlFor="fechaInasistenciaRP" className="block text-gray-700 text-sm font-bold mb-2">Fecha de Inasistencia:</label>
+                                <input type="date" id="fechaInasistenciaRP" value={fechaInasistenciaRP} onChange={(e) => setFechaInasistenciaRP(e.target.value)} className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500" required />
+                            </div>
+                            <div className="mb-4">
+                                <label htmlFor="cantidadDiasRP" className="block text-gray-700 text-sm font-bold mb-2">Cantidad de Días:</label>
+                                <input type="number" id="cantidadDiasRP" value={cantidadDiasRP} onChange={(e) => setCantidadDiasRP(e.target.value)} className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500" required />
+                            </div>
+                            <button type="submit" className="w-full bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-4 rounded-lg transition-colors">
+                                Enviar Solicitud
                             </button>
                         </form>
                     </div>
