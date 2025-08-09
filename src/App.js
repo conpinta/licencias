@@ -1,30 +1,36 @@
 /* global XLSX, jspdf */
 import React, { useState, useEffect, useRef, memo } from 'react';
 import { initializeApp } from 'firebase/app';
-import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged, sendPasswordResetEmail } from 'firebase/auth';
+import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged, sendPasswordResetEmail, signInWithCustomToken, signInAnonymously } from 'firebase/auth';
 import { getFirestore, collection, addDoc, onSnapshot, doc, getDoc, deleteDoc, query } from 'firebase/firestore';
+import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 
 // Variables globales para la configuración de Firebase
 let appId = 'default-app-id';
 let firebaseConfig = {};
+let __initial_auth_token = '';
 
-// Obtener la configuración de Firebase desde el entorno de Canvas o variables de entorno
+// Obtener la configuración de Firebase desde el entorno de Canvas
 if (typeof window !== 'undefined' && typeof window.__firebase_config !== 'undefined') {
     try {
         firebaseConfig = JSON.parse(window.__firebase_config);
     } catch (e) {
         console.error("Error parsing __firebase_config:", e);
     }
-} else if (typeof process.env.REACT_APP_FIREBASE_CONFIG !== 'undefined') {
-    try {
-        firebaseConfig = JSON.parse(process.env.REACT_APP_FIREBASE_CONFIG);
-    } catch (e) {
-        console.error("Error parsing REACT_APP_FIREBASE_CONFIG:", e);
-    }
 }
+
 if (typeof window !== 'undefined' && typeof window.__app_id !== 'undefined') {
     appId = window.__app_id;
 }
+if (typeof window !== 'undefined' && typeof window.__initial_auth_token !== 'undefined') {
+    __initial_auth_token = window.__initial_auth_token;
+}
+
+// Inicializar Firebase
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+const auth = getAuth(app);
+const storage = getStorage(app);
 
 // Componente para los campos comunes del formulario (memoized para evitar re-renders innecesarios)
 const CommonFormFields = memo(({ dni, setDni, categoria, setCategoria, oficina, setOficina, email, setEmail, celular, setCelular }) => (
@@ -87,7 +93,7 @@ const CommonFormFields = memo(({ dni, setDni, categoria, setCategoria, oficina, 
     </>
 ));
 
-// Componente para el Panel de Administración (memoized para evitar re-renders innecesarios)
+// Componente para el Panel de Administración
 const AdminPanel = memo(({ db, isAuthReady, appId, setMessage, setError }) => {
     const [submittedForms, setSubmittedForms] = useState([]);
     const [adminMessage, setAdminMessage] = useState('Cargando solicitudes...');
@@ -141,7 +147,7 @@ const AdminPanel = memo(({ db, isAuthReady, appId, setMessage, setError }) => {
             document.head.removeChild(xlsxScript);
             document.head.removeChild(jspdfScript);
         };
-    }, []);
+    }, [setError]);
 
     useEffect(() => {
         if (!db || !isAuthReady) return;
@@ -163,7 +169,7 @@ const AdminPanel = memo(({ db, isAuthReady, appId, setMessage, setError }) => {
         });
 
         return () => unsubscribe();
-    }, [db, isAuthReady, appId]);
+    }, [db, isAuthReady, appId, setError]);
 
     // Hook para cerrar el dropdown al hacer clic fuera de él
     useEffect(() => {
@@ -199,6 +205,7 @@ const AdminPanel = memo(({ db, isAuthReady, appId, setMessage, setError }) => {
                 'Días': diasStr,
                 'Adjunto': adjuntoStr,
                 'Fecha Envío': timestampStr,
+                'URL Adjunto': form.archivoAdjunto || '-', // Agregar la URL del adjunto
             };
         });
     };
@@ -206,6 +213,10 @@ const AdminPanel = memo(({ db, isAuthReady, appId, setMessage, setError }) => {
     // Función para exportar los datos a TXT
     const handleExportTxt = () => {
         const data = getExportData();
+        if (data.length === 0) {
+            setMessage('No hay datos para exportar.');
+            return;
+        }
         const header = Object.keys(data[0]).join('\t');
         const rows = data.map(row => Object.values(row).join('\t')).join('\n');
         
@@ -230,6 +241,11 @@ const AdminPanel = memo(({ db, isAuthReady, appId, setMessage, setError }) => {
         }
 
         const data = getExportData();
+        if (data.length === 0) {
+            setMessage('No hay datos para exportar.');
+            return;
+        }
+
         const ws = XLSX.utils.json_to_sheet(data);
         const wb = XLSX.utils.book_new();
         XLSX.utils.book_append_sheet(wb, ws, "Solicitudes");
@@ -243,13 +259,18 @@ const AdminPanel = memo(({ db, isAuthReady, appId, setMessage, setError }) => {
             setError("Error: La librería jsPDF aún no está disponible.");
             return;
         }
+        
+        const data = getExportData();
+        if (data.length === 0) {
+            setMessage('No hay datos para exportar.');
+            return;
+        }
 
         const { jsPDF } = jspdf;
         const doc = new jsPDF();
         
         doc.text("Reporte de Solicitudes de Licencias", 14, 15);
 
-        const data = getExportData();
         const columns = Object.keys(data[0]);
         const rows = data.map(row => Object.values(row));
 
@@ -377,7 +398,7 @@ const AdminPanel = memo(({ db, isAuthReady, appId, setMessage, setError }) => {
                                 <th className="py-3 px-4 border-b text-left text-sm font-semibold text-gray-700">DNI</th>
                                 <th className="py-3 px-4 border-b text-left text-sm font-semibold text-gray-700">Email</th>
                                 <th className="py-3 px-4 border-b text-left text-sm font-semibold text-gray-700">Celular</th>
-                                <th className="py-3 px-4 border-b text-left text-sm font-semibold text-gray-700">Fecha Envío</th>
+                                <th className="py-3 px-4 border-b text-left text-sm font-semibold text-gray-700">Adjunto</th>
                                 <th className="py-3 px-4 border-b text-left text-sm font-semibold text-gray-700">Acciones</th>
                             </tr>
                         </thead>
@@ -390,7 +411,15 @@ const AdminPanel = memo(({ db, isAuthReady, appId, setMessage, setError }) => {
                                     <td className="py-2 px-4 border-b text-sm text-gray-800">{form.dni}</td>
                                     <td className="py-2 px-4 border-b text-sm text-gray-800">{form.email}</td>
                                     <td className="py-2 px-4 border-b text-sm text-gray-800">{form.celular}</td>
-                                    <td className="py-2 px-4 border-b text-sm text-gray-800">{new Date(form.timestamp).toLocaleString()}</td>
+                                    <td className="py-2 px-4 border-b text-sm text-gray-800">
+                                        {form.archivoAdjunto ? (
+                                            <a href={form.archivoAdjunto} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline">
+                                                Ver
+                                            </a>
+                                        ) : (
+                                            'No'
+                                        )}
+                                    </td>
                                     <td className="py-2 px-4 border-b text-sm text-gray-800 space-x-2 flex">
                                         <button
                                             onClick={() => handleWhatsApp(form)}
@@ -398,16 +427,16 @@ const AdminPanel = memo(({ db, isAuthReady, appId, setMessage, setError }) => {
                                             title="Enviar WhatsApp"
                                         >
                                             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512" fill="currentColor" className="h-4 w-4">
-                                                <path d="M380.9 97.1C339.4 55.6 283.4 32 224 32S108.6 55.6 67.1 97.1 32 195.4 32 256c0 52.8 19 102.3 52.6 138.8L32 480l112-32 25.1 7.2c35.8 10.3 73.1 14.8 111.6 14.8 59.4 0 115.4-23.6 156.9-65.1S480 316.6 480 256c0-60.6-23.6-116.6-65.1-158.9zM224 432c-35.8 0-71.1-6.7-103.5-20.1L96 414.8 54.8 480l-20.1-133.5c-37.1-70.1-57.7-151.7-57.7-236.4 0-107 43-205.1 113.8-278.3 69.2-70.8 167.3-114.2 277.2-114.2 110.1 0 208.2 43.4 277.2 114.2 70.8 73.2 113.8 171.3 113.8 278.3 0 107-43 205.1-113.8 278.3-69.2 70.8-167.3 114.2-277.2 114.2-35.8 0-71.1-6.7-103.5-20.1zm-48.4-118.2l-37.8-13.8-19.3 22.8c-2.3 2.7-5.6 4-9.2 4-3.6 0-7-1.3-9.3-4l-15.6-18.4c-2.3-2.7-3.5-6.2-3.5-10.1 0-3.9 1.2-7.4 3.5-10.1l15.6-18.4c2.3-2.7 5.6-4 9.3-4h37.8c3.6 0 7 1.3 9.3 4l19.3 22.8c2.3 2.7 3.5 6.2 3.5 10.1 0 3.9-1.2 7.4-3.5 10.1l-15.6 18.4c-2.3 2.7-5.6 4-9.3 4zM240 313.8l-15.6-18.4c-2.3-2.7-5.6-4-9.3-4-3.6 0-7 1.3-9.3 4l-19.3 22.8c-2.3 2.7-3.5 6.2-3.5 10.1 0 3.9 1.2 7.4 3.5 10.1l15.6 18.4c2.3 2.7 5.6 4 9.3 4h37.8c3.6 0 7-1.3 9.3-4l19.3-22.8c2.3-2.7 3.5-6.2 3.5-10.1 0-3.9-1.2-7.4-3.5-10.1l-15.6-18.4c-2.3-2.7-5.6-4-9.3-4zM304.4 295.4l-15.6 18.4c-2.3 2.7-5.6 4-9.3 4-3.6 0-7-1.3-9.3-4l-19.3-22.8c-2.3-2.7-3.5-6.2-3.5-10.1 0-3.9 1.2-7.4 3.5-10.1l15.6-18.4c2.3-2.7 5.6-4 9.3-4h37.8c3.6 0 7 1.3 9.3 4l19.3 22.8c2.3 2.7 3.5 6.2 3.5 10.1 0 3.9-1.2 7.4-3.5 10.1z" />
+                                                <path d="M380.9 97.1C339.4 55.6 283.4 32 224 32S108.6 55.6 67.1 97.1 32 195.4 32 256c0 52.8 19 102.3 52.6 138.8L32 480l112-32 25.1 7.2c35.8 10.3 73.1 14.8 111.6 14.8 59.4 0 115.4-23.6 156.9-65.1S480 316.6 480 256c0-60.6-23.6-116.6-65.1-158.9zM224 432c-35.8 0-71.1-6.7-103.5-20.1L96 414.8 54.8 480l-20.1-133.5c-37.1-70.1-57.7-151.7-57.7-236.4 0-107 43-205.1 113.8-278.3 69.2-70.8 167.3-114.2 277.2-114.2 110.1 0 208.2 43.4 277.2 114.2 70.8 73.2 113.8 171.3 113.8 278.3 0 107-43 205.1-113.8 278.3-69.2 70.8-167.3 114.2-277.2 114.2-35.8 0-71.1-6.7-103.5-20.1zm-48.4-118.2l-37.8-13.8-19.3 22.8c-2.3 2.7-5.6 4-9.2 4-3.6 0-7-1.3-9.3-4l-15.6-18.4c-2.3-2.7-3.5-6.2-3.5-10.1 0-3.9 1.2-7.4 3.5-10.1l15.6-18.4c2.3-2.7 5.6-4 9.3-4h37.8c3.6 0 7 1.3 9.3 4l19.3 22.8c2.3 2.7 3.5 6.2 3.5 10.1 0 3.9-1.2 7.4-3.5 10.1l-15.6 18.4c-2.3 2.7-5.6 4-9.3 4zM240 313.8l-15.6-18.4c-2.3-2.7-5.6-4-9.3-4-3.6 0-7 1.3-9.3 4l-19.3 22.8c-2.3 2.7-3.5 6.2-3.5 10.1 0 3.9 1.2 7.4-3.5 10.1l-15.6 18.4c-2.3 2.7-5.6 4-9.3 4zM224 432c-35.8 0-71.1-6.7-103.5-20.1L96 414.8 54.8 480l-20.1-133.5c-37.1-70.1-57.7-151.7-57.7-236.4 0-107 43-205.1 113.8-278.3 69.2-70.8 167.3-114.2 277.2-114.2 110.1 0 208.2 43.4 277.2 114.2 70.8 73.2 113.8 171.3 113.8 278.3 0 107-43 205.1-113.8 278.3-69.2 70.8-167.3 114.2-277.2 114.2-35.8 0-71.1-6.7-103.5-20.1zm-48.4-118.2l-37.8-13.8-19.3 22.8c-2.3 2.7-5.6 4-9.2 4-3.6 0-7-1.3-9.3-4l-15.6-18.4c-2.3-2.7-3.5-6.2-3.5-10.1 0-3.9 1.2-7.4 3.5-10.1l15.6-18.4c2.3-2.7 5.6-4 9.3-4h37.8c3.6 0 7 1.3 9.3 4l19.3 22.8c2.3 2.7 3.5 6.2 3.5 10.1 0 3.9-1.2 7.4-3.5 10.1l-15.6 18.4c-2.3 2.7-5.6 4-9.3 4zM240 313.8l-15.6-18.4c-2.3-2.7-5.6-4-9.3-4-3.6 0-7 1.3-9.3 4l-19.3 22.8c-2.3 2.7-3.5 6.2-3.5 10.1 0 3.9 1.2 7.4-3.5 10.1l-15.6 18.4c-2.3 2.7-5.6 4-9.3 4z" />
                                             </svg>
                                         </button>
                                         <button
                                             onClick={() => confirmDelete(form.id)}
                                             className="bg-red-500 hover:bg-red-600 text-white p-2 rounded-lg transition duration-300 ease-in-out transform hover:scale-110"
-                                            title="Eliminar Registro"
+                                            title="Eliminar"
                                         >
-                                            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-                                                <path fillRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clipRule="evenodd" />
+                                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512" fill="currentColor" className="h-4 w-4">
+                                                <path d="M135.2 17.7L128 32H32C14.3 32 0 46.3 0 64S14.3 96 32 96H416c17.7 0 32-14.3 32-32s-14.3-32-32-32H320l-7.2-14.7C307.4 6.8 296.3 0 284.2 0H163.8c-12.1 0-23.2 6.8-28.6 17.7zM416 128H32L53.2 467c1.6 25.3 22.6 45 47.9 45H346.9c25.3 0 46.3-19.7 47.9-45L416 128z" />
                                             </svg>
                                         </button>
                                     </td>
@@ -418,22 +447,21 @@ const AdminPanel = memo(({ db, isAuthReady, appId, setMessage, setError }) => {
                 </div>
             )}
             
-            {/* Modal de confirmación de eliminación */}
             {showDeleteConfirm && (
-                <div className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full flex items-center justify-center">
-                    <div className="bg-white p-8 rounded-lg shadow-xl max-w-sm w-full text-center">
-                        <h3 className="text-xl font-bold text-gray-800 mb-4">¿Estás seguro?</h3>
-                        <p className="text-gray-600 mb-6">Esta acción eliminará el registro de forma permanente. No se puede deshacer.</p>
-                        <div className="flex justify-center space-x-4">
+                <div className="fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center p-4">
+                    <div className="bg-white rounded-lg shadow-xl p-8 max-w-sm w-full">
+                        <h3 className="text-lg font-bold mb-4">Confirmar Eliminación</h3>
+                        <p className="text-gray-700 mb-6">¿Estás seguro de que quieres eliminar esta solicitud de forma permanente?</p>
+                        <div className="flex justify-end space-x-4">
                             <button
                                 onClick={() => setShowDeleteConfirm(false)}
-                                className="bg-gray-300 hover:bg-gray-400 text-gray-800 font-bold py-2 px-4 rounded-lg transition duration-300"
+                                className="px-4 py-2 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300"
                             >
                                 Cancelar
                             </button>
                             <button
                                 onClick={handleDelete}
-                                className="bg-red-500 hover:bg-red-600 text-white font-bold py-2 px-4 rounded-lg transition duration-300"
+                                className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700"
                             >
                                 Eliminar
                             </button>
@@ -445,1046 +473,314 @@ const AdminPanel = memo(({ db, isAuthReady, appId, setMessage, setError }) => {
     );
 });
 
-// Componente para el formulario de inicio de sesión/registro
-const AuthForm = ({ auth, setMessage, setError, setUserId }) => {
+
+// Componente principal de la aplicación
+export default function App() {
+    const [user, setUser] = useState(null);
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
-    const [isRegistering, setIsRegistering] = useState(false);
-    const [showForgotPassword, setShowForgotPassword] = useState(false); // Nuevo estado para la recuperación
-
-    // Función para manejar el inicio de sesión o registro
-    const handleAuth = async (e) => {
-        e.preventDefault();
-        setMessage('');
-        setError(null);
-        if (!auth) {
-            setError("Error: Firebase Auth no está inicializado.");
-            return;
-        }
-
-        try {
-            if (isRegistering) {
-                await createUserWithEmailAndPassword(auth, email, password);
-                setMessage('Usuario registrado con éxito. Ahora puedes iniciar sesión.');
-                setIsRegistering(false);
-            } else {
-                const userCredential = await signInWithEmailAndPassword(auth, email, password);
-                setUserId(userCredential.user.uid);
-                setMessage('Inicio de sesión exitoso.');
-            }
-        } catch (err) {
-            console.error("Error during authentication:", err);
-            setError(`Error de autenticación: ${err.message}`);
-        }
-    };
-
-    // Función para manejar la recuperación de contraseña
-    const handlePasswordReset = async (e) => {
-        e.preventDefault();
-        setMessage('');
-        setError(null);
-        if (!auth) {
-            setError("Error: Firebase Auth no está inicializado.");
-            return;
-        }
-
-        try {
-            await sendPasswordResetEmail(auth, email);
-            setMessage('Se ha enviado un enlace de recuperación de contraseña a tu correo electrónico.');
-            setShowForgotPassword(false);
-        } catch (err) {
-            console.error("Error sending password reset email:", err);
-            setError(`Error al enviar el correo: ${err.message}. Asegúrate de que el correo electrónico sea correcto.`);
-        }
-    };
-
-    return (
-        <div className="p-6 bg-white rounded-lg shadow-md max-w-sm mx-auto my-8">
-            <h2 className="text-2xl font-bold mb-6 text-center text-gray-800">
-                {showForgotPassword ? 'Recuperar Contraseña' : (isRegistering ? 'Registrarse' : 'Iniciar Sesión')}
-            </h2>
-
-            {showForgotPassword ? (
-                // Formulario de recuperación de contraseña
-                <form onSubmit={handlePasswordReset}>
-                    <div className="mb-4">
-                        <label className="block text-gray-700 text-sm font-bold mb-2" htmlFor="email">
-                            Correo Electrónico
-                        </label>
-                        <input
-                            className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500"
-                            id="email"
-                            type="email"
-                            placeholder="Tu correo electrónico"
-                            value={email}
-                            onChange={(e) => setEmail(e.target.value)}
-                            required
-                        />
-                    </div>
-                    <div className="flex items-center justify-between">
-                        <button
-                            className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg focus:outline-none focus:shadow-outline w-full transition duration-300 ease-in-out transform hover:scale-105"
-                            type="submit"
-                        >
-                            Enviar Enlace de Recuperación
-                        </button>
-                    </div>
-                    <button
-                        type="button"
-                        onClick={() => setShowForgotPassword(false)}
-                        className="mt-4 w-full text-center text-sm text-gray-600 hover:text-gray-800"
-                    >
-                        Volver a Iniciar Sesión
-                    </button>
-                </form>
-            ) : (
-                // Formulario de inicio de sesión/registro
-                <>
-                    <div className="flex justify-center mb-4">
-                        <button
-                            onClick={() => setIsRegistering(false)}
-                            className={`px-4 py-2 rounded-l-lg font-bold ${!isRegistering ? 'bg-blue-500 text-white' : 'bg-gray-200 text-gray-700'}`}
-                        >
-                            Iniciar Sesión
-                        </button>
-                        <button
-                            onClick={() => setIsRegistering(true)}
-                            className={`px-4 py-2 rounded-r-lg font-bold ${isRegistering ? 'bg-blue-500 text-white' : 'bg-gray-200 text-gray-700'}`}
-                        >
-                            Registrarse
-                        </button>
-                    </div>
-                    <form onSubmit={handleAuth}>
-                        <div className="mb-4">
-                            <label className="block text-gray-700 text-sm font-bold mb-2" htmlFor="email">
-                                Correo Electrónico
-                            </label>
-                            <input
-                                className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                id="email"
-                                type="email"
-                                value={email}
-                                onChange={(e) => setEmail(e.target.value)}
-                                required
-                            />
-                        </div>
-                        <div className="mb-2">
-                            <label className="block text-gray-700 text-sm font-bold mb-2" htmlFor="password">
-                                Contraseña
-                            </label>
-                            <input
-                                className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                id="password"
-                                type="password"
-                                value={password}
-                                onChange={(e) => setPassword(e.target.value)}
-                                required
-                            />
-                        </div>
-                        <div className="mb-6 text-right">
-                            <button
-                                type="button"
-                                onClick={() => setShowForgotPassword(true)}
-                                className="inline-block align-baseline text-sm text-blue-500 hover:text-blue-800"
-                            >
-                                ¿Olvidaste tu contraseña?
-                            </button>
-                        </div>
-                        <div className="flex items-center justify-between">
-                            <button
-                                className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg focus:outline-none focus:shadow-outline w-full transition duration-300 ease-in-out transform hover:scale-105"
-                                type="submit"
-                            >
-                                {isRegistering ? 'Registrarse' : 'Iniciar Sesión'}
-                            </button>
-                        </div>
-                    </form>
-                </>
-            )}
-        </div>
-    );
-};
-
-// Nuevo componente para la vista de éxito
-const SuccessView = ({ submittedFormInfo, resetApp, userId }) => {
-    const { formData, ticketNumber } = submittedFormInfo;
-
-    // Función para generar el texto del mensaje para descargar/compartir
-    const generateMessageText = () => {
-        let message = `*Confirmación de Solicitud de Licencia*\n\n`;
-        message += `*Número de Ticket:* ${ticketNumber}\n`;
-        message += `*Tipo de Solicitud:* ${formData.formType}\n`;
-        message += `*Nombre:* ${formData.nombreCompletoEmpleado || `${formData.nombre || ''} ${formData.apellido || ''}`.trim()}\n`;
-        message += `*DNI:* ${formData.dni}\n`;
-        message += `*Correo Electrónico:* ${formData.email}\n`;
-        if (formData.archivoAdjunto) {
-            message += `*Archivo Adjunto:* Sí (${formData.archivoAdjunto})\n`;
-        } else {
-            message += `*Archivo Adjunto:* No\n`;
-        }
-        message += `*Fecha de Envío:* ${new Date(formData.timestamp).toLocaleString()}\n`;
-        
-        if (formData.fechaInicio) message += `*Fecha de Inicio:* ${formData.fechaInicio}\n`;
-        if (formData.fechaFin) message += `*Fecha de Fin:* ${formData.fechaFin}\n`;
-        if (formData.fechaInasistenciaRP) message += `*Fecha de Inasistencia:* ${formData.fechaInasistenciaRP}\n`;
-        if (formData.cantidadDias) message += `*Cantidad de Días:* ${formData.cantidadDias}\n`;
-        message += `*ID de Usuario:* ${userId}\n`;
-        message += `\nGracias por usar nuestro servicio.\n`;
-
-        return message;
-    };
-
-    // Función para descargar el archivo
-    const handleDownload = () => {
-        const text = generateMessageText();
-        const blob = new Blob([text], { type: 'text/plain' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `ticket-${ticketNumber}.txt`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-    };
-
-    // Función para compartir por WhatsApp
-    const handleWhatsApp = () => {
-        const text = generateMessageText();
-        const whatsappUrl = `https://wa.me/?text=${encodeURIComponent(text)}`;
-        window.open(whatsappUrl, '_blank');
-    };
-
-    // Función para enviar por correo electrónico
-    const handleEmail = () => {
-        const subject = encodeURIComponent(`Confirmación de Solicitud de Licencia - Ticket #${ticketNumber}`);
-        const body = encodeURIComponent(generateMessageText());
-        const emailUrl = `mailto:${formData.email}?subject=${subject}&body=${body}`;
-        window.location.href = emailUrl;
-    };
-
-    return (
-        <div className="p-6 bg-white rounded-lg shadow-md max-w-2xl mx-auto my-8 text-center">
-            <h2 className="text-3xl font-bold mb-4 text-green-600">¡Solicitud Enviada con Éxito! 🎉</h2>
-            <p className="text-lg text-gray-700 mb-6">Tu solicitud ha sido registrada.</p>
-            <div className="bg-gray-100 p-6 rounded-lg mb-6 text-left">
-                <p className="text-sm text-gray-600 mb-2">Aquí están los detalles de tu solicitud:</p>
-                <p className="text-xl font-mono text-gray-800">
-                    <span className="font-bold">Número de Ticket:</span> {ticketNumber}
-                </p>
-                <p className="text-md text-gray-800">
-                    <span className="font-bold">Tipo de Solicitud:</span> {formData.formType}
-                </p>
-                <p className="text-md text-gray-800">
-                    <span className="font-bold">Nombre Completo:</span> {formData.nombreCompletoEmpleado || `${formData.nombre || ''} ${formData.apellido || ''}`.trim()}
-                </p>
-            </div>
-            <p className="text-lg text-gray-700 mb-4">Puedes guardar una copia o compartirla:</p>
-            <div className="flex flex-col sm:flex-row justify-center gap-4">
-                <button
-                    onClick={handleDownload}
-                    className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg transition duration-300 ease-in-out transform hover:scale-105 flex items-center justify-center"
-                >
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-2" viewBox="0 0 20 20" fill="currentColor">
-                        <path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clipRule="evenodd" />
-                    </svg>
-                    Descargar
-                </button>
-                <button
-                    onClick={handleEmail}
-                    className="bg-yellow-500 hover:bg-yellow-600 text-white font-bold py-2 px-4 rounded-lg transition duration-300 ease-in-out transform hover:scale-105 flex items-center justify-center"
-                >
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-2" viewBox="0 0 20 20" fill="currentColor">
-                        <path d="M2.003 5.884L10 9.882l7.997-3.998A2 2 0 0016 4H4a2 2 0 00-1.997 1.884z" />
-                        <path d="M18 8.118l-8 4-8-4V14a2 2 0 002 2h12a2 2 0 002-2V8.118z" />
-                    </svg>
-                    Enviar por Email
-                </button>
-                <button
-                    onClick={handleWhatsApp}
-                    className="bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-4 rounded-lg transition duration-300 ease-in-out transform hover:scale-105 flex items-center justify-center"
-                >
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512" fill="currentColor" className="h-5 w-5 mr-2">
-                        <path d="M380.9 97.1C339.4 55.6 283.4 32 224 32S108.6 55.6 67.1 97.1 32 195.4 32 256c0 52.8 19 102.3 52.6 138.8L32 480l112-32 25.1 7.2c35.8 10.3 73.1 14.8 111.6 14.8 59.4 0 115.4-23.6 156.9-65.1S480 316.6 480 256c0-60.6-23.6-116.6-65.1-158.9zM224 432c-35.8 0-71.1-6.7-103.5-20.1L96 414.8 54.8 480l-20.1-133.5c-37.1-70.1-57.7-151.7-57.7-236.4 0-107 43-205.1 113.8-278.3 69.2-70.8 167.3-114.2 277.2-114.2 110.1 0 208.2 43.4 277.2 114.2 70.8 73.2 113.8 171.3 113.8 278.3 0 107-43 205.1-113.8 278.3-69.2 70.8-167.3 114.2-277.2 114.2-35.8 0-71.1-6.7-103.5-20.1zm-48.4-118.2l-37.8-13.8-19.3 22.8c-2.3 2.7-5.6 4-9.2 4-3.6 0-7-1.3-9.3-4l-15.6-18.4c-2.3-2.7-3.5-6.2-3.5-10.1 0-3.9 1.2-7.4 3.5-10.1l15.6-18.4c2.3-2.7 5.6-4 9.3-4h37.8c3.6 0 7 1.3 9.3 4l19.3 22.8c2.3 2.7 3.5 6.2 3.5 10.1 0 3.9-1.2 7.4-3.5 10.1l-15.6 18.4c-2.3 2.7-5.6 4-9.3 4zM240 313.8l-15.6-18.4c-2.3-2.7-5.6-4-9.3-4-3.6 0-7 1.3-9.3 4l-19.3 22.8c-2.3 2.7-3.5 6.2-3.5 10.1 0 3.9 1.2 7.4 3.5 10.1l15.6 18.4c2.3 2.7 5.6 4 9.3 4h37.8c3.6 0 7-1.3 9.3-4l19.3-22.8c2.3-2.7 3.5-6.2 3.5-10.1 0-3.9-1.2-7.4-3.5-10.1l-15.6-18.4c-2.3-2.7-5.6-4-9.3-4zM304.4 295.4l-15.6 18.4c-2.3 2.7-5.6 4-9.3 4-3.6 0-7-1.3-9.3-4l-19.3-22.8c-2.3-2.7-3.5-6.2-3.5-10.1 0-3.9 1.2-7.4 3.5-10.1l15.6-18.4c2.3-2.7 5.6-4 9.3-4h37.8c3.6 0 7 1.3 9.3 4l19.3 22.8c2.3 2.7 3.5 6.2 3.5 10.1 0 3.9-1.2 7.4-3.5 10.1z" />
-                    </svg>
-                    Enviar por WhatsApp
-                </button>
-            </div>
-            <button
-                onClick={resetApp}
-                className="mt-8 bg-gray-500 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-lg transition duration-300 ease-in-out transform hover:scale-105"
-            >
-                Volver al Menú Principal
-            </button>
-        </div>
-    );
-};
-
-function App() {
-    const [db, setDb] = useState(null);
-    const [auth, setAuth] = useState(null);
-    const [user, setUser] = useState(null);
-    const [userId, setUserId] = useState(null);
-    const [isAuthReady, setIsAuthReady] = useState(false);
-    const [isAdmin, setIsAdmin] = useState(false);
-    const [currentView, setCurrentView] = useState('home');
-    const [loading, setLoading] = useState(false);
+    const [isLogin, setIsLogin] = useState(true);
+    const [error, setError] = useState('');
     const [message, setMessage] = useState('');
-    const [error, setError] = useState(null);
-    const [submittedFormInfo, setSubmittedFormInfo] = useState(null);
+    const [currentView, setCurrentView] = useState('home');
 
-    // State for common form fields
-    const [nombre, setNombre] = useState('');
-    const [apellido, setApellido] = useState('');
+    // Estados para los formularios
     const [dni, setDni] = useState('');
     const [categoria, setCategoria] = useState('');
     const [oficina, setOficina] = useState('');
-    const [email, setEmail] = useState('');
     const [celular, setCelular] = useState('');
+    const [nombreCompletoEmpleado, setNombreCompletoEmpleado] = useState('');
+
+    // Estados para el formulario de Licencia por Estudio
+    const [fechaInasistenciaEstudio, setFechaInasistenciaEstudio] = useState('');
+    const [cantidadDiasEstudio, setCantidadDiasEstudio] = useState('');
+    const [adjuntoEstudio, setAdjuntoEstudio] = useState(null);
+
+    // Estados para el formulario de Licencia por Enfermedad
     const [fechaInicio, setFechaInicio] = useState('');
     const [fechaFin, setFechaFin] = useState('');
-    const [cantidadDias, setCantidadDias] = useState('');
-    
-    // Estados para el manejo de archivos adjuntos
-    const [archivoAdjunto, setArchivoAdjunto] = useState(null);
-    const [archivoAdjuntoURL, setArchivoAdjuntoURL] = useState(null);
-    const [uploadingFile, setUploadingFile] = useState(false);
+    const [adjuntoEnfermedad, setAdjuntoEnfermedad] = useState(null);
+    const [diagnostico, setDiagnostico] = useState('');
 
-    // Specific states for sick leave
-    const [tipoLicenciaEnfermedad, setTipoLicenciaEnfermedad] = useState('');
-    const [nombreEmpleadoEnfermedad, setNombreEmpleadoEnfermedad] = useState('');
-    const [otroNombreEmpleado, setOtroNombreEmpleado] = useState('');
+    // Estado para saber si la autenticación está lista
+    const [isAuthReady, setIsAuthReady] = useState(false);
 
-    // Specific states for vacation
-    const [tipoLicenciaVacaciones, setTipoLicenciaVacaciones] = useState('');
-    const [anioVacaciones, setAnioVacaciones] = useState('');
-
-    // Specific states for personal reasons
-    const [fechaInasistenciaRP, setFechaInasistenciaRP] = useState('');
-
-    // Specific states for study leave
-    const [fechaInasistenciaEstudio, setFechaInasistenciaEstudio] = useState('');
-
-    // Firebase Initialization and Auth
+    // useEffect para manejar el estado de autenticación de Firebase
     useEffect(() => {
-        if (Object.keys(firebaseConfig).length === 0) {
-            setError("Error: La configuración de Firebase no se ha cargado. Por favor, revisa tus variables de entorno en Vercel.");
+        const unsubscribe = onAuthStateChanged(auth, async (user) => {
+            if (user) {
+                setUser(user);
+            } else {
+                setUser(null);
+            }
             setIsAuthReady(true);
-            return;
-        }
+        });
 
-        try {
-            const app = initializeApp(firebaseConfig);
-            const authInstance = getAuth(app);
-            const dbInstance = getFirestore(app);
-
-            setAuth(authInstance);
-            setDb(dbInstance);
-
-            const unsubscribe = onAuthStateChanged(authInstance, (user) => {
-                if (user) {
-                    setUser(user);
-                    setUserId(user.uid);
-                } else {
-                    setUser(null);
-                    setUserId(null);
-                }
-                setIsAuthReady(true);
-            });
-
-            return () => unsubscribe();
-        } catch (err) {
-            console.error("Error initializing Firebase:", err);
-            setError(`Error al inicializar Firebase. Posiblemente las variables de configuración están mal configuradas. Error: ${err.message}`);
-        }
+        // Limpiar el listener al desmontar el componente
+        return () => unsubscribe();
     }, []);
 
-    // Effect para verificar si el usuario es administrador
-    useEffect(() => {
-        const checkAdminStatus = async () => {
-            if (!db || !userId) {
-                setIsAdmin(false);
-                return;
-            }
+    // Función unificada para manejar la subida de archivos y el envío del formulario
+    const handleSubmitWithFile = async (event, formType, file, formData) => {
+        event.preventDefault();
+        setError('');
+        setMessage('');
 
-            try {
-                const adminDocRef = doc(db, `artifacts/${appId}/public/data/admins`, userId);
-                const adminDoc = await getDoc(adminDocRef);
-
-                if (adminDoc.exists()) {
-                    setIsAdmin(true);
-                } else {
-                    setIsAdmin(false);
-                }
-            } catch (err) {
-                console.error("Error checking admin status:", err);
-                setError(`Error al verificar estado de administrador: ${err.message}`);
-            }
-        };
-
-        if (isAuthReady && db && userId) {
-            checkAdminStatus();
-        } else {
-            setIsAdmin(false);
-        }
-    }, [db, userId, isAuthReady]);
-
-    const handleLogout = async () => {
-        if (auth) {
-            try {
-                await signOut(auth);
-                setMessage("Sesión cerrada correctamente.");
-                setCurrentView('home');
-            } catch (error) {
-                console.error("Error during sign out:", error);
-                setError("Error al cerrar sesión.");
-            }
-        }
-    };
-
-    // Función para manejar el adjunto de archivos
-    const handleFileChange = (e) => {
-        const file = e.target.files[0];
-        if (file) {
-            setUploadingFile(true);
-            setArchivoAdjunto(file);
-            
-            // Crear una URL temporal para la previsualización
-            const fileURL = URL.createObjectURL(file);
-            setArchivoAdjuntoURL(fileURL);
-            
-            setUploadingFile(false);
-        } else {
-            setArchivoAdjunto(null);
-            setArchivoAdjuntoURL(null);
-        }
-    };
-
-    // Función para eliminar el archivo adjunto
-    const handleRemoveFile = () => {
-        setArchivoAdjunto(null);
-        setArchivoAdjuntoURL(null);
-        setMessage("Archivo adjunto eliminado.");
-    };
-
-    const handleSubmit = async (e, formType) => {
-        e.preventDefault();
-        if (!db || !userId) {
-            setMessage('Error: Firebase no está inicializado o el usuario no está autenticado.');
+        if (!user) {
+            setError('Error: Usuario no autenticado.');
             return;
         }
 
-        setLoading(true);
-        setMessage('');
-
-        let formData = {
-            userId: userId,
-            timestamp: new Date().toISOString(),
-            formType: formType,
-            // Common fields that might be empty depending on the form
-            dni,
-            categoria,
-            oficina,
-            email,
-            celular,
-            fechaInicio,
-            fechaFin,
-            cantidadDias,
-            // Aquí es donde se manejaría la subida del archivo a Firebase Storage
-            // y se guardaría la URL de descarga. Para esta demo, solo guardamos el nombre.
-            archivoAdjunto: archivoAdjunto ? archivoAdjunto.name : null,
-        };
-
-        switch (formType) {
-            case 'sick':
-                const finalNombreEmpleado = nombreEmpleadoEnfermedad === 'Otro' ? otroNombreEmpleado : nombreEmpleadoEnfermedad;
-                const nameParts = finalNombreEmpleado.split(' ');
-                formData = {
-                    ...formData,
-                    nombre: nameParts[0] || '',
-                    apellido: nameParts.slice(1).join(' ') || '',
-                    nombreCompletoEmpleado: finalNombreEmpleado,
-                    tipoLicenciaEnfermedad,
-                };
-                break;
-            case 'vacation':
-            case 'personal':
-            case 'study':
-                formData = {
-                    ...formData,
-                    nombre,
-                    apellido,
-                };
-                if (formType === 'vacation') {
-                    formData = {
-                        ...formData,
-                        tipoLicenciaVacaciones,
-                        anioVacaciones,
-                    };
-                } else if (formType === 'personal') {
-                    formData = {
-                        ...formData,
-                        fechaInasistenciaRP,
-                    };
-                } else if (formType === 'study') {
-                    formData = {
-                        ...formData,
-                        fechaInasistenciaEstudio,
-                    };
-                }
-                break;
-            default:
-                break;
+        if (!file) {
+            setError('Por favor, adjunta un archivo.');
+            return;
         }
 
         try {
-            const docRef = await addDoc(collection(db, `artifacts/${appId}/public/data/allLicencias`), formData);
-            const ticketNumber = docRef.id;
+            // Subir el archivo a Firebase Storage
+            const fileRef = ref(storage, `licencias/${user.uid}/${formType}/${file.name}_${Date.now()}`);
+            await uploadBytes(fileRef, file);
+            const downloadURL = await getDownloadURL(fileRef);
 
-            // Almacenar la información del formulario para la vista de éxito
-            setSubmittedFormInfo({ formData, ticketNumber });
-            
-            // Cambiar a la vista de éxito
+            // Preparar los datos para Firestore
+            const dataToSave = {
+                ...formData,
+                formType,
+                userId: user.uid,
+                archivoAdjunto: downloadURL, // Guardar la URL de descarga
+                timestamp: new Date().toISOString(),
+                nombreCompletoEmpleado: nombreCompletoEmpleado || `${formData.nombre || ''} ${formData.apellido || ''}`.trim(),
+            };
+
+            // Guardar los datos en Firestore
+            const q = collection(db, `artifacts/${appId}/public/data/allLicencias`);
+            await addDoc(q, dataToSave);
+
+            setMessage('¡Formulario enviado con éxito!');
+            resetForm();
             setCurrentView('success');
 
-            // Limpiar el formulario
+        } catch (e) {
+            console.error("Error al subir archivo o enviar formulario: ", e);
+            setError(`Error al enviar el formulario: ${e.message}`);
+        }
+    };
+
+    // Funciones de manejo de formularios sin adjuntos (casi idénticas a las tuyas)
+    const handleLogin = async (e) => {
+        e.preventDefault();
+        setError('');
+        try {
+            await signInWithEmailAndPassword(auth, email, password);
+        } catch (e) {
+            setError('Error al iniciar sesión. Verifica tu email y contraseña.');
+        }
+    };
+
+    const handleRegister = async (e) => {
+        e.preventDefault();
+        setError('');
+        try {
+            await createUserWithEmailAndPassword(auth, email, password);
+            setMessage('Usuario registrado con éxito. Ahora puedes iniciar sesión.');
+            setIsLogin(true);
+        } catch (e) {
+            setError('Error al registrar. Intenta con un email diferente.');
+        }
+    };
+
+    const handleLogout = async () => {
+        try {
+            await signOut(auth);
+            setCurrentView('home');
             resetForm();
-        } catch (err) {
-            console.error("Error al enviar la solicitud:", err);
-            setMessage(`Error al enviar la solicitud: ${err.message}`);
-        } finally {
-            setLoading(false);
+        } catch (e) {
+            setError('Error al cerrar sesión.');
+        }
+    };
+
+    const handlePasswordReset = async () => {
+        setError('');
+        if (!email) {
+            setError('Por favor, introduce tu email para restablecer la contraseña.');
+            return;
+        }
+        try {
+            await sendPasswordResetEmail(auth, email);
+            setMessage('Se ha enviado un correo electrónico para restablecer tu contraseña.');
+        } catch (e) {
+            setError('Error al enviar el correo. Verifica que el email sea correcto.');
         }
     };
 
     const resetForm = () => {
-        setNombre('');
-        setApellido('');
         setDni('');
         setCategoria('');
         setOficina('');
         setEmail('');
         setCelular('');
+        setNombreCompletoEmpleado('');
+        setFechaInasistenciaEstudio('');
+        setCantidadDiasEstudio('');
+        setAdjuntoEstudio(null);
         setFechaInicio('');
         setFechaFin('');
-        setCantidadDias('');
-        setArchivoAdjunto(null);
-        setArchivoAdjuntoURL(null);
-        setUploadingFile(false);
-        setTipoLicenciaEnfermedad('');
-        setNombreEmpleadoEnfermedad('');
-        setOtroNombreEmpleado('');
-        setTipoLicenciaVacaciones('');
-        setAnioVacaciones('');
-        setFechaInasistenciaRP('');
-        setFechaInasistenciaEstudio('');
-    };
-    
-    // Función para resetear toda la aplicación y volver a la página de inicio
-    const resetApp = () => {
-        resetForm();
-        setSubmittedFormInfo(null);
-        setCurrentView('home');
+        setAdjuntoEnfermedad(null);
+        setDiagnostico('');
+        setMessage('');
+        setError('');
     };
 
+    // Lógica para renderizar formularios específicos (modificados para incluir adjuntos)
     const renderForm = () => {
-        if (error) {
+        if (!user) {
             return (
-                <div className="p-6 bg-red-100 border-l-4 border-red-500 text-red-700 max-w-lg mx-auto my-8 rounded-lg shadow-md">
-                    <h3 className="text-xl font-bold mb-2">Error de Inicialización</h3>
-                    <p>{error}</p>
-                    <p className="mt-4 text-sm">
-                        Por favor, revisa tus variables de entorno en Vercel para asegurarte de que la configuración de Firebase sea correcta.
-                    </p>
+                <div className="bg-white p-8 rounded-lg shadow-xl w-full max-w-md">
+                    <h2 className="text-2xl font-bold mb-6 text-center text-gray-800">{isLogin ? 'Iniciar Sesión' : 'Registrarse'}</h2>
+                    <form onSubmit={isLogin ? handleLogin : handleRegister} className="flex flex-col space-y-4">
+                        <input
+                            type="email"
+                            placeholder="Correo Electrónico"
+                            value={email}
+                            onChange={(e) => setEmail(e.target.value)}
+                            className="p-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            required
+                        />
+                        <input
+                            type="password"
+                            placeholder="Contraseña"
+                            value={password}
+                            onChange={(e) => setPassword(e.target.value)}
+                            className="p-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            required
+                        />
+                        <button type="submit" className="w-full bg-blue-500 text-white font-bold py-3 px-4 rounded-lg hover:bg-blue-600 transition-colors">
+                            {isLogin ? 'Iniciar Sesión' : 'Registrarse'}
+                        </button>
+                    </form>
+                    <div className="mt-4 text-center">
+                        <button onClick={() => setIsLogin(!isLogin)} className="text-sm text-blue-500 hover:underline">
+                            {isLogin ? '¿No tienes una cuenta? Regístrate' : '¿Ya tienes una cuenta? Inicia sesión'}
+                        </button>
+                    </div>
+                    {isLogin && (
+                        <div className="mt-4 text-center">
+                            <button onClick={handlePasswordReset} className="text-sm text-blue-500 hover:underline">
+                                ¿Olvidaste tu contraseña?
+                            </button>
+                        </div>
+                    )}
                 </div>
             );
         }
 
-        if (!isAuthReady) {
-            return <div className="text-center text-lg text-gray-600 mt-10">Cargando aplicación...</div>;
-        }
-
-        if (!user) {
-            // Si no hay un usuario autenticado, mostramos el formulario de login/registro
-            return <AuthForm auth={auth} setMessage={setMessage} setError={setError} setUserId={setUserId} />;
-        }
-        
-        // Renderizar la vista de éxito si existe la información del formulario
-        if (currentView === 'success' && submittedFormInfo) {
-            return <SuccessView submittedFormInfo={submittedFormInfo} resetApp={resetApp} userId={userId} />;
-        }
-
         switch (currentView) {
-            case 'sick':
-                return (
-                    <form onSubmit={(e) => handleSubmit(e, 'sick')} className="p-6 bg-white rounded-lg shadow-md max-w-lg mx-auto my-8">
-                        <h2 className="text-2xl font-bold mb-6 text-center text-gray-800">Solicitud de Licencia por Enfermedad</h2>
-                        
-                        <div className="mb-4">
-                            <label htmlFor="nombreEmpleadoEnfermedad" className="block text-gray-700 text-sm font-bold mb-2">Nombre del Empleado:</label>
-                            <select
-                                id="nombreEmpleadoEnfermedad"
-                                className="shadow border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                value={nombreEmpleadoEnfermedad}
-                                onChange={(e) => {
-                                    setNombreEmpleadoEnfermedad(e.target.value);
-                                    if (e.target.value !== 'Otro') {
-                                        setOtroNombreEmpleado('');
-                                    }
-                                }}
-                                required
-                            >
-                                <option value="">Seleccione o Agregue</option>
-                                <option value="Juan Perez">Juan Perez</option>
-                                <option value="Maria Lopez">Maria Lopez</option>
-                                <option value="Carlos Gomez">Carlos Gomez</option>
-                                <option value="Otro">Otro (ingresar abajo)</option>
-                            </select>
-                            {nombreEmpleadoEnfermedad === 'Otro' && (
-                                <input
-                                    type="text"
-                                    placeholder="Ingrese el nombre completo"
-                                    className="mt-2 shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                    value={otroNombreEmpleado}
-                                    onChange={(e) => setOtroNombreEmpleado(e.target.value)}
-                                    required
-                                />
-                            )}
-                        </div>
-
-                        <CommonFormFields 
-                            dni={dni} setDni={setDni}
-                            categoria={categoria} setCategoria={setCategoria}
-                            oficina={oficina} setOficina={setOficina}
-                            email={email} setEmail={setEmail}
-                            celular={celular} setCelular={setCelular}
-                        />
-
-                        <div className="mb-4">
-                            <label htmlFor="tipoLicenciaEnfermedad" className="block text-gray-700 text-sm font-bold mb-2">Tipo de Licencia:</label>
-                            <select
-                                id="tipoLicenciaEnfermedad"
-                                className="shadow border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                value={tipoLicenciaEnfermedad}
-                                onChange={(e) => setTipoLicenciaEnfermedad(e.target.value)}
-                                required
-                            >
-                                <option value="">Seleccione un tipo</option>
-                                <option value="art22: enfermedad">Art. 22: Enfermedad</option>
-                                <option value="art29: atencion familiar">Art. 29: Atención Familiar</option>
-                            </select>
-                        </div>
-                        <div className="mb-4">
-                            <label htmlFor="fechaInicio" className="block text-gray-700 text-sm font-bold mb-2">Fecha de Inicio:</label>
-                            <input
-                                type="date"
-                                id="fechaInicio"
-                                className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                value={fechaInicio}
-                                onChange={(e) => setFechaInicio(e.target.value)}
-                                required
-                            />
-                        </div>
-                        <div className="mb-4">
-                            <label htmlFor="fechaFin" className="block text-gray-700 text-sm font-bold mb-2">Fecha de Regreso:</label>
-                            <input
-                                type="date"
-                                id="fechaFin"
-                                className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                value={fechaFin}
-                                onChange={(e) => setFechaFin(e.target.value)}
-                                required
-                            />
-                        </div>
-                        <div className="mb-4">
-                            <label htmlFor="cantidadDias" className="block text-gray-700 text-sm font-bold mb-2">Cantidad de Días:</label>
-                            <select
-                                id="cantidadDias"
-                                className="shadow border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                value={cantidadDias}
-                                onChange={(e) => setCantidadDias(e.target.value)}
-                                required
-                            >
-                                <option value="">Seleccione días</option>
-                                {Array.from({ length: 15 }, (_, i) => i + 1).map(day => (
-                                    <option key={day} value={day}>{day}</option>
-                                ))}
-                            </select>
-                        </div>
-
-                        {/* --- Campo para adjuntar archivo con previsualización --- */}
-                        <div className="mb-6">
-                            <label htmlFor="archivoAdjunto" className="block text-gray-700 text-sm font-bold mb-2">Certificado Médico (Adjuntar):</label>
-                            <input
-                                type="file"
-                                id="archivoAdjunto"
-                                className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                onChange={handleFileChange}
-                                accept="image/*,application/pdf"
-                            />
-                            {uploadingFile && (
-                                <p className="text-blue-500 text-sm mt-2">Cargando archivo...</p>
-                            )}
-                            {archivoAdjunto && (
-                                <div className="mt-4 p-4 border border-gray-300 rounded-lg flex items-center justify-between">
-                                    <div className="flex items-center space-x-3">
-                                        {archivoAdjunto.type.startsWith('image/') ? (
-                                            <img src={archivoAdjuntoURL} alt="Vista previa del certificado" className="h-12 w-12 object-cover rounded" />
-                                        ) : (
-                                            <svg xmlns="http://www.w3.org/2000/svg" className="h-12 w-12 text-red-500" viewBox="0 0 20 20" fill="currentColor">
-                                                <path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.414L16.586 7A2 2 0 0117 8.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 2h4l4 4v6H6V6z" clipRule="evenodd" />
-                                            </svg>
-                                        )}
-                                        <span className="text-sm font-medium text-gray-800">{archivoAdjunto.name}</span>
-                                    </div>
-                                    <button
-                                        type="button"
-                                        onClick={handleRemoveFile}
-                                        className="text-red-500 hover:text-red-700"
-                                        title="Eliminar archivo"
-                                    >
-                                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                                            <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
-                                        </svg>
-                                    </button>
-                                </div>
-                            )}
-                        </div>
-                        {/* --- Fin del campo de adjunto --- */}
-
-                        <button
-                            type="submit"
-                            className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg focus:outline-none focus:shadow-outline w-full transition duration-300 ease-in-out transform hover:scale-105"
-                            disabled={loading}
-                        >
-                            {loading ? 'Enviando...' : 'Enviar Solicitud'}
-                        </button>
-                    </form>
-                );
-            case 'vacation':
-                return (
-                    <form onSubmit={(e) => handleSubmit(e, 'vacation')} className="p-6 bg-white rounded-lg shadow-md max-w-lg mx-auto my-8">
-                        <h2 className="text-2xl font-bold mb-6 text-center text-gray-800">Solicitud de Vacaciones</h2>
-                        <div className="mb-4">
-                            <label htmlFor="nombre" className="block text-gray-700 text-sm font-bold mb-2">Nombre:</label>
-                            <input
-                                type="text"
-                                id="nombre"
-                                className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                value={nombre}
-                                onChange={(e) => setNombre(e.target.value)}
-                                required
-                            />
-                        </div>
-                        <div className="mb-4">
-                            <label htmlFor="apellido" className="block text-gray-700 text-sm font-bold mb-2">Apellido:</label>
-                            <input
-                                type="text"
-                                id="apellido"
-                                className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                value={apellido}
-                                onChange={(e) => setApellido(e.target.value)}
-                                required
-                            />
-                        </div>
-                        <CommonFormFields 
-                            dni={dni} setDni={setDni}
-                            categoria={categoria} setCategoria={setCategoria}
-                            oficina={oficina} setOficina={setOficina}
-                            email={email} setEmail={setEmail}
-                            celular={celular} setCelular={setCelular}
-                        />
-                        
-                        <div className="mb-4">
-                            <label htmlFor="fechaInicio" className="block text-gray-700 text-sm font-bold mb-2">Fecha de Inicio:</label>
-                            <input
-                                type="date"
-                                id="fechaInicio"
-                                className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                value={fechaInicio}
-                                onChange={(e) => setFechaInicio(e.target.value)}
-                                required
-                            />
-                        </div>
-                        <div className="mb-4">
-                            <label htmlFor="fechaFin" className="block text-gray-700 text-sm font-bold mb-2">Fecha de Fin:</label>
-                            <input
-                                type="date"
-                                id="fechaFin"
-                                className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                value={fechaFin}
-                                onChange={(e) => setFechaFin(e.target.value)}
-                                required
-                            />
-                        </div>
-                        <div className="mb-4">
-                            <label htmlFor="tipoLicenciaVacaciones" className="block text-gray-700 text-sm font-bold mb-2">Tipo de Licencia (Vacaciones):</label>
-                            <select
-                                id="tipoLicenciaVacaciones"
-                                className="shadow border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                value={tipoLicenciaVacaciones}
-                                onChange={(e) => setTipoLicenciaVacaciones(e.target.value)}
-                                required
-                            >
-                                <option value="">Seleccione un tipo</option>
-                                <option value="enero">Enero</option>
-                                <option value="julio">Julio</option>
-                                <option value="otro">Otro</option>
-                            </select>
-                        </div>
-                        <div className="mb-6">
-                            <label htmlFor="anioVacaciones" className="block text-gray-700 text-sm font-bold mb-2">Año:</label>
-                            <input
-                                type="number"
-                                id="anioVacaciones"
-                                className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                value={anioVacaciones}
-                                onChange={(e) => setAnioVacaciones(e.target.value)}
-                                min="2020"
-                                max="2030"
-                                required
-                            />
-                        </div>
-                        <button
-                            type="submit"
-                            className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg focus:outline-none focus:shadow-outline w-full transition duration-300 ease-in-out transform hover:scale-105"
-                            disabled={loading}
-                        >
-                            {loading ? 'Enviando...' : 'Enviar Solicitud'}
-                        </button>
-                    </form>
-                );
-            case 'personal':
-                return (
-                    <form onSubmit={(e) => handleSubmit(e, 'personal')} className="p-6 bg-white rounded-lg shadow-md max-w-lg mx-auto my-8">
-                        <h2 className="text-2xl font-bold mb-6 text-center text-gray-800">Solicitud de Razones Particulares (Art. 34)</h2>
-                        <div className="mb-4">
-                            <label htmlFor="nombre" className="block text-gray-700 text-sm font-bold mb-2">Nombre:</label>
-                            <input
-                                type="text"
-                                id="nombre"
-                                className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                value={nombre}
-                                onChange={(e) => setNombre(e.target.value)}
-                                required
-                            />
-                        </div>
-                        <div className="mb-4">
-                            <label htmlFor="apellido" className="block text-gray-700 text-sm font-bold mb-2">Apellido:</label>
-                            <input
-                                type="text"
-                                id="apellido"
-                                className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                value={apellido}
-                                onChange={(e) => setApellido(e.target.value)}
-                                required
-                            />
-                        </div>
-                        <CommonFormFields 
-                            dni={dni} setDni={setDni}
-                            categoria={categoria} setCategoria={setCategoria}
-                            oficina={oficina} setOficina={setOficina}
-                            email={email} setEmail={setEmail}
-                            celular={celular} setCelular={setCelular}
-                        />
-
-                        <div className="mb-4">
-                            <label htmlFor="fechaInasistenciaRP" className="block text-gray-700 text-sm font-bold mb-2">Fecha de Inasistencia:</label>
-                            <input
-                                type="date"
-                                id="fechaInasistenciaRP"
-                                className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                value={fechaInasistenciaRP}
-                                onChange={(e) => setFechaInasistenciaRP(e.target.value)}
-                                required
-                            />
-                        </div>
-                        <div className="mb-6">
-                            <label htmlFor="cantidadDias" className="block text-gray-700 text-sm font-bold mb-2">Cantidad de Días:</label>
-                            <select
-                                id="cantidadDias"
-                                className="shadow border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                value={cantidadDias}
-                                onChange={(e) => setCantidadDias(e.target.value)}
-                                required
-                            >
-                                <option value="">Seleccione días</option>
-                                <option value="1">1 día</option>
-                                <option value="2">2 días (Máximo)</option>
-                            </select>
-                        </div>
-                        <button
-                            type="submit"
-                            className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg focus:outline-none focus:shadow-outline w-full transition duration-300 ease-in-out transform hover:scale-105"
-                            disabled={loading}
-                        >
-                            {loading ? 'Enviando...' : 'Enviar Solicitud'}
-                        </button>
-                    </form>
-                );
-            case 'study':
-                return (
-                    <form onSubmit={(e) => handleSubmit(e, 'study')} className="p-6 bg-white rounded-lg shadow-md max-w-lg mx-auto my-8">
-                        <h2 className="text-2xl font-bold mb-6 text-center text-gray-800">Solicitud de Licencia por Estudio</h2>
-                        <div className="mb-4">
-                            <label htmlFor="nombre" className="block text-gray-700 text-sm font-bold mb-2">Nombre:</label>
-                            <input
-                                type="text"
-                                id="nombre"
-                                className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                value={nombre}
-                                onChange={(e) => setNombre(e.target.value)}
-                                required
-                            />
-                        </div>
-                        <div className="mb-4">
-                            <label htmlFor="apellido" className="block text-gray-700 text-sm font-bold mb-2">Apellido:</label>
-                            <input
-                                type="text"
-                                id="apellido"
-                                className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                value={apellido}
-                                onChange={(e) => setApellido(e.target.value)}
-                                required
-                            />
-                        </div>
-                        <CommonFormFields 
-                            dni={dni} setDni={setDni}
-                            categoria={categoria} setCategoria={setCategoria}
-                            oficina={oficina} setOficina={setOficina}
-                            email={email} setEmail={setEmail}
-                            celular={celular} setCelular={setCelular}
-                        />
-
-                        <div className="mb-4">
-                            <label htmlFor="fechaInasistenciaEstudio" className="block text-gray-700 text-sm font-bold mb-2">Día de Inasistencia:</label>
-                            <input
-                                type="date"
-                                id="fechaInasistenciaEstudio"
-                                className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                value={fechaInasistenciaEstudio}
-                                onChange={(e) => setFechaInasistenciaEstudio(e.target.value)}
-                                required
-                            />
-                        </div>
-                        
-                        {/* --- Campo para adjuntar archivo con previsualización --- */}
-                        <div className="mb-6">
-                            <label htmlFor="archivoAdjunto" className="block text-gray-700 text-sm font-bold mb-2">Certificado de Examen (Adjuntar):</label>
-                            <input
-                                type="file"
-                                id="archivoAdjunto"
-                                className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                onChange={handleFileChange}
-                                accept="image/*,application/pdf"
-                            />
-                            {uploadingFile && (
-                                <p className="text-blue-500 text-sm mt-2">Cargando archivo...</p>
-                            )}
-                            {archivoAdjunto && (
-                                <div className="mt-4 p-4 border border-gray-300 rounded-lg flex items-center justify-between">
-                                    <div className="flex items-center space-x-3">
-                                        {archivoAdjunto.type.startsWith('image/') ? (
-                                            <img src={archivoAdjuntoURL} alt="Vista previa del certificado" className="h-12 w-12 object-cover rounded" />
-                                        ) : (
-                                            <svg xmlns="http://www.w3.org/2000/svg" className="h-12 w-12 text-red-500" viewBox="0 0 20 20" fill="currentColor">
-                                                <path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.414L16.586 7A2 2 0 0117 8.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 2h4l4 4v6H6V6z" clipRule="evenodd" />
-                                            </svg>
-                                        )}
-                                        <span className="text-sm font-medium text-gray-800">{archivoAdjunto.name}</span>
-                                    </div>
-                                    <button
-                                        type="button"
-                                        onClick={handleRemoveFile}
-                                        className="text-red-500 hover:text-red-700"
-                                        title="Eliminar archivo"
-                                    >
-                                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                                            <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
-                                        </svg>
-                                    </button>
-                                </div>
-                            )}
-                        </div>
-                        {/* --- Fin del campo de adjunto --- */}
-
-                        <button
-                            type="submit"
-                            className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg focus:outline-none focus:shadow-outline w-full transition duration-300 ease-in-out transform hover:scale-105"
-                            disabled={loading}
-                        >
-                            {loading ? 'Enviando...' : 'Enviar Solicitud'}
-                        </button>
-                    </form>
-                );
-            case 'admin':
-                return <AdminPanel db={db} isAuthReady={isAuthReady} appId={appId} setMessage={setMessage} setError={setError} />;
             case 'home':
-            default:
                 return (
-                    <div className="p-6 bg-white rounded-lg shadow-md max-w-2xl mx-auto my-8 text-center">
-                        <h2 className="text-3xl font-bold mb-6 text-gray-800">Bienvenido al Portal de Licencias</h2>
-                        <p className="text-lg text-gray-700 mb-8">Por favor, selecciona el tipo de solicitud que deseas realizar:</p>
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div className="flex flex-col items-center justify-center space-y-4">
+                        <h1 className="text-4xl font-extrabold text-gray-800">Bienvenido</h1>
+                        <p className="text-xl text-gray-600 mb-8">Elige una opción para comenzar:</p>
+                        <div className="flex space-x-4">
                             <button
-                                onClick={() => setCurrentView('sick')}
-                                className="bg-green-500 hover:bg-green-600 text-white font-bold py-4 px-6 rounded-lg shadow-lg transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-opacity-50"
+                                onClick={() => setCurrentView('enfermedad')}
+                                className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-6 rounded-full transition-colors shadow-lg"
                             >
-                                🤒 Licencia por Enfermedad
+                                Licencia por Enfermedad
                             </button>
                             <button
-                                onClick={() => setCurrentView('vacation')}
-                                className="bg-yellow-500 hover:bg-yellow-600 text-white font-bold py-4 px-6 rounded-lg shadow-lg transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-yellow-500 focus:ring-opacity-50"
+                                onClick={() => setCurrentView('estudio')}
+                                className="bg-purple-600 hover:bg-purple-700 text-white font-bold py-3 px-6 rounded-full transition-colors shadow-lg"
                             >
-                                🏖️ Solicitud de Vacaciones
+                                Licencia por Estudio
                             </button>
                             <button
-                                onClick={() => setCurrentView('personal')}
-                                className="bg-red-500 hover:bg-red-600 text-white font-bold py-4 px-6 rounded-lg shadow-lg transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-opacity-50"
+                                onClick={() => setCurrentView('admin')}
+                                className="bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-6 rounded-full transition-colors shadow-lg"
                             >
-                                📝 Solicitud de Razones Particulares
-                            </button>
-                            <button
-                                onClick={() => setCurrentView('study')}
-                                className="bg-indigo-500 hover:bg-indigo-600 text-white font-bold py-4 px-6 rounded-lg shadow-lg transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-opacity-50"
-                            >
-                                📚 Licencia por Estudio
+                                Panel de Administración
                             </button>
                         </div>
-                        {isAdmin && (
-                            <div className="mt-10">
-                                <button
-                                    onClick={() => setCurrentView('admin')}
-                                    className="bg-gray-700 hover:bg-gray-800 text-white font-bold py-3 px-8 rounded-lg shadow-md transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-gray-600 focus:ring-opacity-50"
-                                >
-                                    ⚙️ Panel de Administración
-                                </button>
-                            </div>
-                        )}
-                        {userId && (
-                            <p className="mt-8 text-sm text-gray-500">
-                                Tu ID de Usuario: <span className="font-mono bg-gray-100 p-1 rounded">{userId}</span>
-                            </p>
-                        )}
                     </div>
                 );
+
+            case 'enfermedad':
+                return (
+                    <div className="p-8 bg-white rounded-lg shadow-lg w-full max-w-md">
+                        <h2 className="text-2xl font-bold mb-6 text-center text-gray-800">Formulario Licencia por Enfermedad</h2>
+                        <form onSubmit={(e) => handleSubmitWithFile(e, 'enfermedad', adjuntoEnfermedad, {
+                            dni, categoria, oficina, email, celular, fechaInicio, fechaFin, diagnostico
+                        })} className="space-y-4">
+                            <CommonFormFields dni={dni} setDni={setDni} categoria={categoria} setCategoria={setCategoria} oficina={oficina} setOficina={setOficina} email={email} setEmail={setEmail} celular={celular} setCelular={setCelular} />
+                            <div className="mb-4">
+                                <label htmlFor="fechaInicio" className="block text-gray-700 text-sm font-bold mb-2">Fecha de Inicio:</label>
+                                <input type="date" id="fechaInicio" value={fechaInicio} onChange={(e) => setFechaInicio(e.target.value)} className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500" required />
+                            </div>
+                            <div className="mb-4">
+                                <label htmlFor="fechaFin" className="block text-gray-700 text-sm font-bold mb-2">Fecha de Fin:</label>
+                                <input type="date" id="fechaFin" value={fechaFin} onChange={(e) => setFechaFin(e.target.value)} className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500" required />
+                            </div>
+                            <div className="mb-4">
+                                <label htmlFor="diagnostico" className="block text-gray-700 text-sm font-bold mb-2">Diagnóstico:</label>
+                                <textarea id="diagnostico" value={diagnostico} onChange={(e) => setDiagnostico(e.target.value)} rows="3" className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500" required />
+                            </div>
+                            <div className="mb-4">
+                                <label htmlFor="adjunto" className="block text-gray-700 text-sm font-bold mb-2">Adjuntar Certificado Médico:</label>
+                                <input type="file" id="adjunto" onChange={(e) => setAdjuntoEnfermedad(e.target.files[0])} className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500" required />
+                            </div>
+                            <button type="submit" className="w-full bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-4 rounded-lg transition-colors">
+                                Enviar Licencia por Enfermedad
+                            </button>
+                        </form>
+                    </div>
+                );
+
+            case 'estudio':
+                return (
+                    <div className="p-8 bg-white rounded-lg shadow-lg w-full max-w-md">
+                        <h2 className="text-2xl font-bold mb-6 text-center text-gray-800">Formulario Licencia por Estudio</h2>
+                        <form onSubmit={(e) => handleSubmitWithFile(e, 'estudio', adjuntoEstudio, {
+                            dni, categoria, oficina, email, celular, fechaInasistenciaEstudio, cantidadDiasEstudio
+                        })} className="space-y-4">
+                            <CommonFormFields dni={dni} setDni={setDni} categoria={categoria} setCategoria={setCategoria} oficina={oficina} setOficina={setOficina} email={email} setEmail={setEmail} celular={celular} setCelular={setCelular} />
+                            <div className="mb-4">
+                                <label htmlFor="fechaInasistenciaEstudio" className="block text-gray-700 text-sm font-bold mb-2">Fecha de Inasistencia:</label>
+                                <input type="date" id="fechaInasistenciaEstudio" value={fechaInasistenciaEstudio} onChange={(e) => setFechaInasistenciaEstudio(e.target.value)} className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500" required />
+                            </div>
+                            <div className="mb-4">
+                                <label htmlFor="cantidadDiasEstudio" className="block text-gray-700 text-sm font-bold mb-2">Cantidad de Días:</label>
+                                <input type="number" id="cantidadDiasEstudio" value={cantidadDiasEstudio} onChange={(e) => setCantidadDiasEstudio(e.target.value)} className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500" required />
+                            </div>
+                            <div className="mb-4">
+                                <label htmlFor="adjunto" className="block text-gray-700 text-sm font-bold mb-2">Adjuntar Constancia de Examen:</label>
+                                <input type="file" id="adjunto" onChange={(e) => setAdjuntoEstudio(e.target.files[0])} className="shadow appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500" required />
+                            </div>
+                            <button type="submit" className="w-full bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-4 rounded-lg transition-colors">
+                                Enviar Licencia por Estudio
+                            </button>
+                        </form>
+                    </div>
+                );
+
+            case 'admin':
+                return <AdminPanel db={db} isAuthReady={isAuthReady} appId={appId} setMessage={setMessage} setError={setError} />;
+
+            case 'success':
+                return (
+                    <div className="text-center p-8 bg-white rounded-lg shadow-lg">
+                        <h2 className="text-3xl font-bold text-green-600">¡Éxito! 🎉</h2>
+                        <p className="text-lg text-gray-700 mt-4">Tu solicitud ha sido enviada correctamente.</p>
+                    </div>
+                );
+
+            default:
+                return null;
         }
     };
 
     return (
-        <div className="min-h-screen bg-gradient-to-br from-blue-100 to-purple-100 p-4 font-inter">
-            <style>
-                {`
-                @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
-                body {
-                    font-family: 'Inter', sans-serif;
-                }
-                `}
-            </style>
-            <script src="https://cdn.tailwindcss.com"></script>
-
-            <header className="flex justify-between items-center py-4 px-6 bg-white shadow-lg rounded-lg mb-8">
-                <h1 className="text-3xl font-bold text-gray-900">Gestión de Licencias</h1>
+        <div className="min-h-screen bg-gray-100 flex flex-col items-center p-4 font-sans">
+            <header className="w-full max-w-4xl flex justify-between items-center py-4 px-6 bg-white shadow-md rounded-b-lg mb-8">
+                <h1 className="text-3xl font-bold text-blue-600">Licencias App</h1>
                 {user && (
                     <div className="flex space-x-4">
                         {currentView !== 'home' && currentView !== 'success' && (
@@ -1502,22 +798,25 @@ function App() {
                             onClick={handleLogout}
                             className="bg-red-500 hover:bg-red-600 text-white font-bold py-2 px-4 rounded-lg transition duration-300 ease-in-out transform hover:scale-105"
                         >
-                            Cerrar Sesión
-                        </button>
+                            Cerrar Sesión</button>
                     </div>
                 )}
             </header>
 
-            <main>
+            <main className="flex-grow flex items-center justify-center w-full">
                 {message && (
-                    <div className={`p-4 mb-4 text-center rounded-lg ${message.includes('Error') ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>
+                    <div className={`fixed bottom-4 left-1/2 -translate-x-1/2 p-4 text-center rounded-lg shadow-lg z-50 ${message.includes('Error') ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>
                         {message}
                     </div>
                 )}
-                {renderForm()}
+                {error && (
+                    <div className="fixed bottom-4 left-1/2 -translate-x-1/2 p-4 text-center rounded-lg shadow-lg z-50 bg-red-100 text-red-700">
+                        {error}
+                    </div>
+                )}
+                {isAuthReady ? renderForm() : <div className="text-center text-gray-500">Cargando...</div>}
             </main>
         </div>
     );
 }
-
 export default App;
