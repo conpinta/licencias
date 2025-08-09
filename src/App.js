@@ -3,20 +3,10 @@ import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, collection, addDoc, onSnapshot, doc, setDoc, query, getDoc } from 'firebase/firestore';
 
-// Definimos la configuración de Firebase usando las variables de entorno de Vercel.
-// El prefijo REACT_APP_ es necesario para que Create React App las reconozca.
-const firebaseConfig = {
-    apiKey: process.env.REACT_APP_FIREBASE_API_KEY,
-    authDomain: process.env.REACT_APP_FIREBASE_AUTH_DOMAIN,
-    projectId: process.env.REACT_APP_FIREBASE_PROJECT_ID,
-    storageBucket: process.env.REACT_APP_FIREBASE_STORAGE_BUCKET,
-    messagingSenderId: process.env.REACT_APP_FIREBASE_MESSAGING_SENDER_ID,
-    appId: process.env.REACT_APP_FIREBASE_APP_ID,
-    measurementId: process.env.REACT_APP_FIREBASE_MEASUREMENT_ID
-};
-
-// Usamos el projectId como el appId en producción para mantener la consistencia
-const appId = process.env.REACT_APP_FIREBASE_PROJECT_ID;
+// Definimos la configuración de Firebase usando las variables de entorno del entorno de Canvas.
+// Estas variables se proporcionan automáticamente y evitan el error 'process is not defined'.
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
 
 // Helper function to convert base64 to ArrayBuffer for audio playback (kept for completeness, not directly used in this version)
 function base64ToArrayBuffer(base64) {
@@ -230,6 +220,7 @@ function App() {
     const [currentView, setCurrentView] = useState('home'); // 'home', 'sick', 'vacation', 'personal', 'study', 'admin'
     const [loading, setLoading] = useState(false);
     const [message, setMessage] = useState('');
+    const [error, setError] = useState(null); // Nuevo estado para manejar errores
 
     // State for common form fields (nombre and apellido will be conditionally rendered)
     const [nombre, setNombre] = useState('');
@@ -261,36 +252,59 @@ function App() {
 
     // Firebase Initialization and Auth
     useEffect(() => {
-        const app = initializeApp(firebaseConfig);
-        const authInstance = getAuth(app);
-        const dbInstance = getFirestore(app);
-
-        setAuth(authInstance);
-        setDb(dbInstance);
-
-        const unsubscribe = onAuthStateChanged(authInstance, async (user) => {
-            if (user) {
-                setUserId(user.uid);
-            } else {
-                // En Vercel, siempre intentamos iniciar sesión de forma anónima
-                try {
-                    await signInAnonymously(authInstance);
+        try {
+            const app = initializeApp(firebaseConfig);
+            const authInstance = getAuth(app);
+            const dbInstance = getFirestore(app);
+    
+            setAuth(authInstance);
+            setDb(dbInstance);
+    
+            const unsubscribe = onAuthStateChanged(authInstance, async (user) => {
+                if (user) {
+                    setUserId(user.uid);
+                } else {
+                    // Usamos el token personalizado si está disponible, de lo contrario, iniciamos sesión de forma anónima
+                    const token = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+                    if (token) {
+                        try {
+                            await signInWithCustomToken(authInstance, token);
+                        } catch (error) {
+                            console.error("Error signing in with custom token:", error);
+                            // Fallback to anonymous sign-in if token fails
+                            try {
+                                await signInAnonymously(authInstance);
+                            } catch (anonError) {
+                                console.error("Error signing in anonymously after token failed:", anonError);
+                                // No es necesario establecer un error aquí, la app puede continuar
+                            }
+                        }
+                    } else {
+                        try {
+                            await signInAnonymously(authInstance);
+                        } catch (anonError) {
+                            console.error("Error signing in anonymously:", anonError);
+                            // No es necesario establecer un error aquí, la app puede continuar
+                        }
+                    }
                     setUserId(authInstance.currentUser?.uid || crypto.randomUUID());
-                } catch (error) {
-                    console.error("Error signing in anonymously:", error);
-                    setUserId(crypto.randomUUID()); // Fallback to random ID
                 }
-            }
-            setIsAuthReady(true);
-        });
-
-        return () => unsubscribe();
+                setIsAuthReady(true);
+            });
+    
+            return () => unsubscribe();
+        } catch (err) {
+            console.error("Error initializing Firebase:", err);
+            setError(`Error al inicializar Firebase. Posiblemente las variables de configuración están mal configuradas. Error: ${err.message}`);
+        }
     }, []);
 
     // Effect para verificar si el usuario es administrador
     useEffect(() => {
         const checkAdminStatus = async () => {
-            if (db && userId) {
+            if (!db || !userId) return; // Asegurarse de que db y userId no sean null
+            
+            try {
                 const adminDocRef = doc(db, `artifacts/${appId}/public/data/admins`, userId);
                 const adminDoc = await getDoc(adminDocRef);
 
@@ -305,13 +319,16 @@ function App() {
                     });
                     setIsAdmin(true);
                 }
+            } catch (err) {
+                console.error("Error checking admin status:", err);
+                setError(`Error al verificar estado de administrador: ${err.message}`);
             }
         };
 
-        if (isAuthReady) {
+        if (isAuthReady && db && userId) {
             checkAdminStatus();
         }
-    }, [db, userId, isAuthReady, appId]);
+    }, [db, userId, isAuthReady]);
 
     // Función para simular el envío de un correo electrónico con los detalles del formulario.
     // En una aplicación real, esto se manejaría en el backend (ej. Firebase Cloud Functions).
@@ -422,9 +439,9 @@ function App() {
             
             resetForm();
             setCurrentView('home');
-        } catch (error) {
-            console.error("Error al enviar la solicitud:", error);
-            setMessage(`Error al enviar la solicitud: ${error.message}`);
+        } catch (err) {
+            console.error("Error al enviar la solicitud:", err);
+            setMessage(`Error al enviar la solicitud: ${err.message}`);
         } finally {
             setLoading(false);
         }
@@ -452,6 +469,18 @@ function App() {
     };
 
     const renderForm = () => {
+        if (error) {
+            return (
+                <div className="p-6 bg-red-100 border-l-4 border-red-500 text-red-700 max-w-lg mx-auto my-8 rounded-lg shadow-md">
+                    <h3 className="text-xl font-bold mb-2">Error de Inicialización</h3>
+                    <p>{error}</p>
+                    <p className="mt-4 text-sm">
+                        Por favor, revisa tus variables de entorno en Vercel para asegurarte de que la configuración de Firebase sea correcta.
+                    </p>
+                </div>
+            );
+        }
+        
         switch (currentView) {
             case 'sick':
                 return (
