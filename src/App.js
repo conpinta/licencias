@@ -335,19 +335,15 @@ function App() {
             if (!db || !userId) return; // Asegurarse de que db y userId no sean null
             
             try {
+                // Ahora solo verificamos si el documento de administrador existe.
+                // No lo creamos automáticamente.
                 const adminDocRef = doc(db, `artifacts/${appId}/public/data/admins`, userId);
                 const adminDoc = await getDoc(adminDocRef);
 
                 if (adminDoc.exists()) {
                     setIsAdmin(true);
                 } else {
-                    // Para demostración: si no existe, lo creamos para que el usuario pueda ver el panel
-                    // En un entorno de producción, esto no se haría.
-                    await setDoc(adminDocRef, {
-                        uid: userId,
-                        createdAt: new Date().toISOString()
-                    });
-                    setIsAdmin(true);
+                    setIsAdmin(false);
                 }
             } catch (err) {
                 console.error("Error checking admin status:", err);
